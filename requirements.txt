@@ -1,0 +1,7 @@
+Flask
+python-dotenv
+pymysql
+opencv-python
+Pillow
+requests
+boto3
