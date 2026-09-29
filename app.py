@@ -37,6 +37,8 @@ def create_app():
     def index():
         return redirect(url_for('dashboard.dashboard'))
 
+
+
     # Jinja filter for basename (used in photos.html)
     import os as _os
     @app.template_filter('basename')
