@@ -1,39 +1,21 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
+# Local secrets / environment (never commit real credentials)
+.env
+.env.test
+.env.local
 
-# Virtual environments
+# Virtualenv
 .venv/
 venv/
-ENV/
-env/
 
-# Flask instance folder (contains local configurations/databases specific to this machine)
-instance/
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
 
-# Environment variables (contains sensitive API keys, database credentials, secrets)
-.env
-.flaskenv
-
-# Database files (if using local SQLite for development)
-*.sqlite3
-*.db
-
-# Unit test / coverage reports
-.pytest_cache/
-.coverage
-htmlcov/
-
-# Operating system files
+# macOS / editors
 .DS_Store
-Thumbs.db
-
-# IDEs and editors
-.idea/
 .vscode/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.swp
+.idea/
+
+# Runtime artifacts: per-conference images, backups, processed output
+storage/
