@@ -37,3 +37,7 @@ class Config:
     S3_BUCKET = os.getenv('S3_BUCKET', '')
     S3_PREFIX = os.getenv('S3_PREFIX', 'delegate_photo')
     S3_DRY_RUN = os.getenv('S3_DRY_RUN', '0') == '1'
+    # Object ACL for uploads. 'public-read' gives Everyone (public) access.
+    # Set to 'private' (or empty) only if the bucket uses a bucket-policy
+    # for public reads and has ACLs disabled (Object Ownership enforced).
+    S3_ACL = os.getenv('S3_ACL', 'public-read')

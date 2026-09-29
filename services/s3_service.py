@@ -56,17 +56,54 @@ def get_s3_client():
     )
 
 
-def upload_file(local_path, s3_key):
-    """Upload local JPEG to S3. Returns public URL. Raises on failure."""
+def upload_file(local_path, s3_key, acl=None):
+    """Upload local JPEG to S3 with public access. Returns public URL. Raises on failure.
+
+    Sets ACL=public-read (Everyone can read) so the returned https URL works
+    without signed URLs. Set S3_ACL=private (or empty) in .env to skip the ACL
+    when the bucket has ACLs disabled and relies on a bucket policy instead.
+    """
     if Config.S3_DRY_RUN:
         return s3_public_url(s3_key)
     if not Config.S3_BUCKET:
         raise ValueError('S3_BUCKET is not configured (.env)')
+    acl = acl if acl is not None else getattr(Config, 'S3_ACL', 'public-read')
+    acl = (acl or '').strip()
+    if acl.lower() in ('none', 'private', ''):
+        acl = ''
     client = get_s3_client()
-    client.upload_file(
-        local_path, Config.S3_BUCKET, s3_key,
-        ExtraArgs={'ContentType': 'image/jpeg'},
-    )
+    extra = {'ContentType': 'image/jpeg'}
+    if acl:
+        extra['ACL'] = acl
+    try:
+        client.upload_file(
+            local_path, Config.S3_BUCKET, s3_key,
+            ExtraArgs=extra,
+        )
+    except Exception as e:
+        code = _code_of(e)
+        # Bucket has ACLs disabled (Object Ownership = Bucket owner enforced):
+        # retry without ACL so upload still succeeds via bucket policy.
+        if acl and code in ('AccessControlListNotSupported', 'InvalidRequest'):
+            client.upload_file(
+                local_path, Config.S3_BUCKET, s3_key,
+                ExtraArgs={'ContentType': 'image/jpeg'},
+            )
+            raise ValueError(
+                f'Uploaded {s3_key} WITHOUT public ACL (bucket has ACLs disabled). '
+                'To make files public, add a bucket policy allowing '
+                f's3:GetObject on arn:aws:s3:::{Config.S3_BUCKET}/*, or enable ACLs. '
+                f'Original error: {e}'
+            )
+        if code in ('AccessDenied', '403'):
+            raise ValueError(
+                'AccessDenied on PutObject with ACL=public-read: bucket blocks public ACLs '
+                '(Block Public Access ON) or IAM lacks s3:PutObjectAcl. Fix: turn OFF '
+                '"Block public access" for bucket/ACLs + grant s3:PutObject + s3:PutObjectAcl, '
+                'OR set S3_ACL=private and use a bucket policy for public reads. '
+                f'Original error: {e}'
+            )
+        raise
     return s3_public_url(s3_key)
 
 
@@ -132,11 +169,17 @@ def test_connection():
             step('head_bucket', False, f'{code or type(e).__name__}: {e}'.strip()[:300])
         return {'ok': False, 'bucket': bucket, 'region': region, 'steps': steps}
 
-    # 3) PutObject probe (same call pattern as real photo upload)
+    # 3) PutObject probe (same call pattern + ACL as real photo upload)
     probe_key = f'{prefix}/_healthcheck_{int(time.time())}.txt'
+    probe_acl = (getattr(Config, 'S3_ACL', 'public-read') or '').strip()
+    if probe_acl.lower() in ('none', 'private', ''):
+        probe_acl = ''
     try:
-        client.put_object(Bucket=bucket, Key=probe_key, Body=b'healthcheck',
-                          ContentType='text/plain')
+        put_kwargs = {'Bucket': bucket, 'Key': probe_key, 'Body': b'healthcheck',
+                      'ContentType': 'text/plain'}
+        if probe_acl:
+            put_kwargs['ACL'] = probe_acl
+        client.put_object(**put_kwargs)
         try:
             client.delete_object(Bucket=bucket, Key=probe_key)
         except Exception:
@@ -145,13 +188,19 @@ def test_connection():
         return {'ok': True, 'bucket': bucket, 'region': region, 'steps': steps}
     except Exception as e:
         code = _code_of(e)
-        if code in ('403', 'AccessDenied'):
+        if code in ('AccessControlListNotSupported', 'InvalidRequest'):
             step('put_object', False,
-                 'AccessDenied on PutObject (your exact error): credentials can SEE the bucket '
-                 'but may not WRITE. Fix: grant s3:PutObject (+s3:DeleteObject for cleanup) on '
-                 f'arn:aws:s3:::{bucket}/{prefix}/* to this IAM user. '
-                 'If the bucket enforces SSE-KMS via policy, also grant kms:GenerateDataKey, '
-                 'or relax the bucket policy. Check bucket Ownership settings too.')
+                 f'{code}: bucket has ACLs disabled (Object Ownership enforced), so ACL=public-read '
+                 'is rejected. Fix: set S3_ACL=private in .env and make the prefix public via a '
+                 f'bucket policy (s3:GetObject on arn:aws:s3:::{bucket}/{prefix}/*).')
+        elif code in ('403', 'AccessDenied'):
+            step('put_object', False,
+                 'AccessDenied on PutObject with public-read ACL: credentials can SEE the bucket '
+                 'but may not WRITE with public ACL. Fix: turn OFF Block Public Access (bucket + ACLs) '
+                 'and grant s3:PutObject + s3:PutObjectAcl on '
+                 f'arn:aws:s3:::{bucket}/{prefix}/* to this IAM user, OR set S3_ACL=private and use '
+                 'a bucket policy for public reads. '
+                 'If the bucket enforces SSE-KMS via policy, also grant kms:GenerateDataKey.')
         else:
             step('put_object', False, f'{code or type(e).__name__}: {e}'.strip()[:300])
         return {'ok': False, 'bucket': bucket, 'region': region, 'steps': steps}
