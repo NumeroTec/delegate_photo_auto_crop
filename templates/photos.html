@@ -278,7 +278,7 @@
           </li>
         </ul>
         <div class="tab-content mb-3">
-          <div class="tab-pane fade show active" id="pane-original"> <small class="text-muted">Using original downloaded photo as source. If missing, will fallback to remote URL.</small></div>
+          <div class="tab-pane fade show active" id="pane-original"> <small class="text-muted">Using original downloaded photo as source (served via the app, cached on first open).</small></div>
           <div class="tab-pane fade" id="pane-cropped"><small class="text-muted">Using already cropped <code>354×472</code> image as source for re-crop.</small></div>
           <div class="tab-pane fade" id="pane-upload">
             <input type="file" id="uploadInput" accept="image/*" class="form-control form-control-sm">
@@ -428,9 +428,8 @@ function loadImageForCropper(url) {
   const placeholder = document.getElementById('cropperPlaceholder');
   img.style.display = 'block';
   placeholder.style.display = 'none';
-  // bust cache
-  const sep = url.includes('?') ? '&' : '?';
-  img.src = url + sep + 'cb=' + Date.now();
+  // Attach handlers BEFORE setting src: cached images can fire load
+  // synchronously and the handler would be missed (dead cropper popup).
   img.onload = () => {
     initCropper();
   };
@@ -439,6 +438,10 @@ function loadImageForCropper(url) {
     placeholder.style.display = 'block';
     placeholder.innerHTML = '<span class="text-danger">Failed to load image</span><br><small>' + url + '</small>';
   };
+  // bust cache (clear first so setting src always triggers a fresh load)
+  const sep = url.includes('?') ? '&' : '?';
+  img.removeAttribute('src');
+  img.src = url + sep + 'cb=' + Date.now();
 }
 
 function initCropper() {
@@ -489,17 +492,26 @@ document.getElementById('uploadInput').addEventListener('change', function(e){
 });
 
 function saveCrop() {
-  if (!cropper) { alert('No image loaded'); return; }
+  if (!cropper) { alert('No image loaded — wait for the photo to appear, then retry'); return; }
   const btn = document.getElementById('saveCropBtn');
+  const resetBtn = () => { btn.disabled=false; btn.innerHTML='<i class="bi bi-check-lg me-1"></i>Save Crop (354×472)'; };
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
-  const canvas = cropper.getCroppedCanvas({
-    width: 354,
-    height: 472,
-    fillColor: '#fff',
-    imageSmoothingQuality: 'high'
-  });
-  if (!canvas) { alert('Crop failed'); btn.disabled=false; btn.innerHTML='<i class="bi bi-check-lg me-1"></i>Save Crop (354×472)'; return;}
+  let canvas = null;
+  try {
+    canvas = cropper.getCroppedCanvas({
+      width: 354,
+      height: 472,
+      fillColor: '#fff',
+      imageSmoothingQuality: 'high'
+    });
+  } catch (e) {
+    console.error(e);
+    alert('Crop blocked by the browser (image security). Close, reopen the popup and retry.');
+    resetBtn();
+    return;
+  }
+  if (!canvas) { alert('Crop failed — reopen the popup and retry'); resetBtn(); return;}
   canvas.toBlob(function(blob){
     const form = new FormData();
     form.append('cropped', blob, 'crop.jpg');
@@ -658,7 +670,8 @@ function testS3Connection(btn) {
   });
 }
 
-// ---- Single photo upload (per photo box) ----function uploadSinglePhoto(delegateId, btn) {
+// ---- Single photo upload (per photo box) ----
+function uploadSinglePhoto(delegateId, btn) {
   const msg = document.getElementById('s3-single-msg-' + delegateId);
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Uploading...';

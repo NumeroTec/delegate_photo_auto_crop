@@ -375,10 +375,14 @@ def photo_info(delegate_id):
     cropped_url = url_for('photos.serve_image', filename=preview_file) + f"?t={ts}" if preview_file and _find_file(preview_file, conf_key) else None
     # Check original exists
     has_original = _find_original(delegate_id, conf_key) is not None
+    # Always serve the original through the same-origin proxy route (which
+    # downloads + caches the remote file on demand). Never hand the browser a
+    # raw cross-origin S3 URL: without CORS headers the image fails to load
+    # (cropper stays empty) and the canvas gets tainted so Save fails.
     return jsonify({
         'delegate_id': delegate_id,
         'full_name': rec.get('full_name',''),
-        'original_url': original_url if has_original else (data.get('original_url') or original_url),
+        'original_url': original_url,
         'has_original_file': has_original,
         'cropped_url': cropped_url,
         'status': data.get('status'),
