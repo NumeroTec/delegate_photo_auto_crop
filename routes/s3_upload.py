@@ -299,6 +299,22 @@ def bulk_upload():
     return jsonify({'started': True, 'total': len(delegate_ids), 'conf_key': conf_key})
 
 
+@upload_bp.route('/test')
+def test_s3_connection():
+    """One-click S3 diagnosis (server config check, no conference needed).
+    Returns per-step results: config -> HeadBucket -> PutObject probe,
+    with the likely fix for each failure. Never exposes secret values."""
+    try:
+        result = s3_service.test_connection()
+        return jsonify(result), (200 if result.get('ok') else 503)
+    except Exception as e:
+        current_app.logger.exception(f"S3 test failed: {e}")
+        return jsonify({'ok': False, 'bucket': Config.S3_BUCKET or '',
+                        'region': Config.AWS_REGION or '',
+                        'steps': [{'name': 'test', 'ok': False,
+                                   'detail': str(e)[:300]}]}), 500
+
+
 @upload_bp.route('/status')
 def upload_status_endpoint():
     s3_ok = bool(Config.S3_BUCKET)
