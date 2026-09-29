@@ -1,7 +1,7 @@
 Flask
 python-dotenv
 pymysql
-opencv-python
+opencv-python==4.12.0.88
 Pillow
 requests
 boto3
