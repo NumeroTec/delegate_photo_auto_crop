@@ -30,6 +30,31 @@ upload_bp = Blueprint('upload', __name__, url_prefix='/upload')
 BACKUP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'storage', 'backup'))
 os.makedirs(BACKUP_DIR, exist_ok=True)
 
+# Action stamped on del_profile_logs rows created by the Photo Crop app upload.
+LOG_ACTION_BEFORE_CROP = "Before Cropping in Photo crop app"
+
+
+def _ist_now_naive():
+    """Current IST (Asia/Kolkata) time as naive datetime for MySQL DATETIME cols."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("Asia/Kolkata")).replace(tzinfo=None)
+    except Exception:
+        # Fallback: UTC + 5:30 when zoneinfo data is unavailable
+        from datetime import timedelta, timezone
+        ist = timezone(timedelta(hours=5, minutes=30))
+        return datetime.now(ist).replace(tzinfo=None)
+
+
+def _ensure_trailing_slash(path):
+    """Ensure del_img_path values saved to DB end with a single '/'."""
+    if not path:
+        return path
+    path = str(path).strip()
+    if not path:
+        return path
+    return path.rstrip('/') + '/'
+
 
 def _match_search(entry, search):
     if not search:
@@ -75,13 +100,22 @@ def _table_columns(conn, table):
         return [r['Field'] for r in cur.fetchall()]
 
 
-def _backup_and_update(conf_schema, delegate_id, new_path, new_filename):
+def _backup_and_update(conf_schema, delegate_id, new_path, new_filename, conf_id=None):
     """INSERT old delegates row into del_profile_logs, then UPDATE delegates.
 
     Returns old row dict. Both statements commit together; rollback on error.
     Column lists are resolved at runtime so full delegates snapshot is stored
     without hardcoding schema.
+
+    - delegates.del_img_path is always saved with a trailing '/'.
+    - del_profile_logs.conf_id is stamped from the selected conference
+      (delegates only has conference_id, so it would otherwise stay NULL).
+    - del_profile_logs.action is stamped as LOG_ACTION_BEFORE_CROP.
+    - del_profile_logs.created_at/updated_at are stamped with IST time
+      instead of relying on DB server timezone.
     """
+    # 1) delegates.del_img_path must end with '/'
+    new_path = _ensure_trailing_slash(new_path)
     conn = get_connection(database=conf_schema)
     try:
         with conn.cursor() as cur:
@@ -91,15 +125,42 @@ def _backup_and_update(conf_schema, delegate_id, new_path, new_filename):
                 raise ValueError(f"delegate_id {delegate_id} not found in {conf_schema}.delegates")
 
             # 1) Backup full old row into del_profile_logs (matching cols only)
+            #     + stamp conf_id / action / IST timestamps (not present in delegates).
             log_cols = _table_columns(conn, 'del_profile_logs')
-            insert_cols = [c for c in old_row.keys() if c in log_cols]
+            insert_cols = [c for c in old_row.keys() if c in log_cols and c != 'log_id']
+            vals = [old_row[c] for c in insert_cols]
+
+            def _set_log_col(name, value):
+                if name not in log_cols:
+                    return
+                if name in insert_cols:
+                    vals[insert_cols.index(name)] = value
+                else:
+                    insert_cols.append(name)
+                    vals.append(value)
+
+            # conf_id comes from the selected conference (delegates has no conf_id)
+            if conf_id is not None:
+                try:
+                    _conf_id_val = int(conf_id)
+                except (TypeError, ValueError):
+                    _conf_id_val = conf_id
+                _set_log_col('conf_id', _conf_id_val)
+            # action describing why this backup was taken
+            _set_log_col('action', LOG_ACTION_BEFORE_CROP)
+            # created_at/updated_at in IST (don't copy delegate's old timestamps,
+            # don't rely on DB server timezone)
+            _ist_now = _ist_now_naive()
+            _set_log_col('created_at', _ist_now)
+            _set_log_col('updated_at', _ist_now)
+
             if not insert_cols:
                 raise ValueError('del_profile_logs has no matching columns with delegates')
             placeholders = ', '.join(['%s'] * len(insert_cols))
             col_list = ', '.join([f"`{c}`" for c in insert_cols])
             cur.execute(
                 f"INSERT INTO del_profile_logs ({col_list}) VALUES ({placeholders})",
-                [old_row[c] for c in insert_cols],
+                vals,
             )
 
             # 2) Update delegates to new S3 photo (only existing columns)
@@ -132,7 +193,7 @@ def _backup_and_update(conf_schema, delegate_id, new_path, new_filename):
         conn.close()
 
 
-def _upload_one(conf_schema, did, conf_key, force=False, csv_w=None, logger=None):
+def _upload_one(conf_schema, did, conf_key, force=False, csv_w=None, logger=None, conf_id=None):
     """Upload a single delegate of ONE conference: S3 put, then backup old row
     + update delegates in one DB txn on that conference's schema. On full
     success flips entry status to GOOD and syncs that conference's dashboard
@@ -166,10 +227,10 @@ def _upload_one(conf_schema, did, conf_key, force=False, csv_w=None, logger=None
     try:
         s3_key, new_filename = s3_service.build_s3_key(conf_key, did, full_name)
         s3_url = s3_service.upload_file(preview, s3_key)
-        new_path = s3_service.s3_base_path(conf_key)
+        new_path = _ensure_trailing_slash(s3_service.s3_base_path(conf_key))
 
         # DB: backup old row + point to new S3 (one txn, commit together)
-        _backup_and_update(conf_schema, did, new_path, new_filename)
+        _backup_and_update(conf_schema, did, new_path, new_filename, conf_id=conf_id)
 
         entry['s3_key'] = s3_key
         entry['s3_url'] = s3_url
@@ -212,7 +273,7 @@ def _upload_one(conf_schema, did, conf_key, force=False, csv_w=None, logger=None
         return 'FAILED', str(e)[:500]
 
 
-def _upload_worker(app, conf_schema, delegate_ids, conf_key, force=False):
+def _upload_worker(app, conf_schema, delegate_ids, conf_key, force=False, conf_id=None):
     job = conf_state.get_upload_job(conf_schema)
     ust = job['status']
     with app.app_context():
@@ -229,7 +290,7 @@ def _upload_worker(app, conf_schema, delegate_ids, conf_key, force=False):
             csv_w.writerow(['delegate_id', 'old_path', 'old_filename', 'new_path', 'new_filename', 's3_key', 's3_url', 'result'])
 
             for did in delegate_ids:
-                result, msg = _upload_one(conf_schema, did, conf_key, force, csv_w=csv_w, logger=app.logger)
+                result, msg = _upload_one(conf_schema, did, conf_key, force, csv_w=csv_w, logger=app.logger, conf_id=conf_id)
                 if result == 'UPLOADED':
                     ust['uploaded'] += 1
                 elif result == 'FAILED':
@@ -264,6 +325,7 @@ def bulk_upload():
         return jsonify({'error': 'No conference selected'}), 400
     conf_key = sel.get('conf_key')
     conf_schema = sel.get('conf_schema')
+    conf_id = sel.get('conf_id')
     if not conf_key or not conf_schema:
         return jsonify({'error': 'Selected conference has no conf_key/conf_schema'}), 400
     if not Config.S3_BUCKET:
@@ -292,7 +354,7 @@ def bulk_upload():
 
     app = current_app._get_current_object()
     thread = threading.Thread(
-        target=_upload_worker, args=(app, conf_schema, delegate_ids, conf_key, force), daemon=True)
+        target=_upload_worker, args=(app, conf_schema, delegate_ids, conf_key, force, conf_id), daemon=True)
     job['thread'] = thread
     thread.start()
     job['status']['total'] = len(delegate_ids)
@@ -348,6 +410,7 @@ def single_upload():
         return jsonify({'success': False, 'error': 'No conference selected'}), 400
     conf_key = sel.get('conf_key')
     conf_schema = sel.get('conf_schema')
+    conf_id = sel.get('conf_id')
     if not conf_key or not conf_schema:
         return jsonify({'success': False, 'error': 'Selected conference has no conf_key/conf_schema'}), 400
     if not Config.S3_BUCKET:
@@ -356,7 +419,7 @@ def single_upload():
         return jsonify({'success': False, 'error': 'Photo not loaded — reload photos page'}), 404
 
     result, msg = _upload_one(conf_schema, did, conf_key, force=False,
-                              csv_w=None, logger=current_app.logger)
+                              csv_w=None, logger=current_app.logger, conf_id=conf_id)
     if result == 'UPLOADED':
         return jsonify({'success': True, 's3_url': msg, 'new_status': 'GOOD',
                         'delegate_id': did})

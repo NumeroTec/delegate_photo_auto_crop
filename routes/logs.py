@@ -18,6 +18,28 @@ from services.photo_service import build_photo_url
 logs_bp = Blueprint('logs', __name__, url_prefix='/logs')
 
 
+def _ist_now_naive():
+    """Current IST (Asia/Kolkata) time as naive datetime for MySQL DATETIME cols."""
+    from datetime import datetime
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("Asia/Kolkata")).replace(tzinfo=None)
+    except Exception:
+        from datetime import timedelta, timezone
+        ist = timezone(timedelta(hours=5, minutes=30))
+        return datetime.now(ist).replace(tzinfo=None)
+
+
+def _ensure_trailing_slash(path):
+    """Ensure del_img_path values saved to DB end with a single '/'."""
+    if not path:
+        return path
+    path = str(path).strip()
+    if not path:
+        return path
+    return path.rstrip('/') + '/'
+
+
 def _selected():
     return session.get('selected_conference')
 
@@ -166,20 +188,46 @@ def restore_log(log_id):
                 placeholders = ', '.join(['%s'] * len(insert_cols))
                 col_list = ', '.join([f"`{c}`" for c in insert_cols])
                 vals = [cur_row[c] for c in insert_cols]
+
+                def _set_log_col(name, value):
+                    if name not in log_cols:
+                        return
+                    if name in insert_cols:
+                        vals[insert_cols.index(name)] = value
+                    else:
+                        insert_cols.append(name)
+                        vals.append(value)
+                        nonlocal placeholders, col_list
+                        placeholders = ', '.join(['%s'] * len(insert_cols))
+                        col_list = ', '.join([f"`{c}`" for c in insert_cols])
+
                 # stamp action if column exists
-                if 'action' in insert_cols:
-                    idx = insert_cols.index('action')
-                    vals[idx] = 'PRE_RESTORE'
+                if 'action' in insert_cols or 'action' in log_cols:
+                    _set_log_col('action', 'PRE_RESTORE')
+                # stamp conf_id from selected conference (delegates has no conf_id)
+                _conf_id = (sel or {}).get('conf_id')
+                if _conf_id is not None:
+                    try:
+                        _conf_id = int(_conf_id)
+                    except (TypeError, ValueError):
+                        pass
+                    _set_log_col('conf_id', _conf_id)
+                # stamp IST time (don't copy delegate's old timestamps,
+                # don't rely on DB server timezone)
+                _ist_now = _ist_now_naive()
+                _set_log_col('created_at', _ist_now)
+                _set_log_col('updated_at', _ist_now)
                 cur.execute(f"INSERT INTO del_profile_logs ({col_list}) VALUES ({placeholders})",
                             vals)
 
             # 2) Restore delegates photo to log values
+            # (del_img_path saved with trailing '/')
             cur.execute("SHOW COLUMNS FROM delegates")
             del_cols = [r['Field'] for r in cur.fetchall()]
             sets, params = [], []
             if 'del_img_path' in del_cols:
                 sets.append("del_img_path=%s")
-                params.append(log_row.get('del_img_path'))
+                params.append(_ensure_trailing_slash(log_row.get('del_img_path')))
             if 'del_img_filename' in del_cols:
                 sets.append("del_img_filename=%s")
                 params.append(log_row.get('del_img_filename'))

@@ -37,10 +37,12 @@ def s3_public_url(s3_key):
 
 
 def s3_base_path(conf_key):
-    """del_img_path value stored in DB so build_photo_url() resolves to S3."""
+    """del_img_path value stored in DB so build_photo_url() resolves to S3.
+    Always ends with a single '/'."""
     bucket = Config.S3_BUCKET
     region = Config.AWS_REGION or 'ap-southeast-1'
     prefix = (Config.S3_PREFIX or 'delegate_photo').strip('/')
+    conf_key = str(conf_key or '').strip().strip('/')
     return f"https://{bucket}.s3.{region}.amazonaws.com/{prefix}/{conf_key}/"
 
 
