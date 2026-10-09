@@ -29,7 +29,34 @@ def _require_sel():
     return conf_schema, conf_key, None
 
 
-def _scan_dir_for_entries(d, status, conf_schema, detail, original_dir):
+def _is_app_uploaded_row(rec, conf_key=None):
+    """Strict app-upload check shared with dashboard worker: base path + filename pattern."""
+    try:
+        import re as _re
+        path = str((rec or {}).get('del_img_path') or '').strip()
+        fname = str((rec or {}).get('del_img_filename') or '').strip()
+        if not path or not fname or 'amazonaws.com' not in path.lower():
+            return False
+        if conf_key:
+            try:
+                from services import s3_service as _s3
+                expected = str(_s3.s3_base_path(conf_key) or '').strip().rstrip('/') + '/'
+                if path.strip().rstrip('/').lower() != expected.strip().rstrip('/').lower():
+                    return False
+            except Exception:
+                pass
+        try:
+            did = int((rec or {}).get('delegate_id') or 0)
+        except (TypeError, ValueError):
+            did = 0
+        if did and not fname.startswith(f"{did}-"):
+            return False
+        return bool(_re.match(r'^.+-\d{8}-\d{6}\.jpe?g$', fname, _re.IGNORECASE))
+    except Exception:
+        return False
+
+
+def _scan_dir_for_entries(d, status, conf_schema, detail, original_dir, conf_key=None):
     """Scan one preview/good dir and register missing ids for this conference."""
     if not d or not os.path.exists(d):
         return
@@ -80,35 +107,17 @@ def _scan_dir_for_entries(d, status, conf_schema, detail, original_dir):
             orig_url = build_photo_url(rec.get('del_img_path'), rec.get('del_img_filename'))
         except Exception:
             orig_url = None
-        # If DB row already points to S3 (migrated in a previous upload run),
-        # restore as GOOD + UPLOADED so it is never re-uploaded after restart
-        # and never re-cropped on the next Start Processing (worker skips S3).
+        # If DB row is a photo uploaded by THIS app (strict base-path +
+        # "<id>-Name-timestamp.jpg" check), restore as GOOD + UPLOADED.
+        # Raw S3 originals (registration uploads) stay with disk status so
+        # the next Start Processing crops them instead of faking GOOD.
         restored_status = status
         restored_detail = 'restored from disk' if status == 'GOOD' else detail
         restored_s3_status = 'PENDING'
         restored_s3_key = None
         restored_s3_url = None
         try:
-            db_path = str((rec or {}).get('del_img_path') or '')
-            low = db_path.lower().strip()
-            _is_s3 = False
-            if 'amazonaws.com' in low:
-                _is_s3 = True
-            else:
-                try:
-                    from config import Config as _Cfg
-                    _bucket = str(getattr(_Cfg, 'S3_BUCKET', '') or '').strip().lower()
-                    if _bucket and _bucket in low and low.startswith('http'):
-                        _is_s3 = True
-                    if not _is_s3:
-                        try:
-                            if int((rec or {}).get('profile_photo_status') or 0) == 1 and low.startswith('http'):
-                                _is_s3 = True
-                        except (TypeError, ValueError):
-                            pass
-                except Exception:
-                    pass
-            if _is_s3:
+            if _is_app_uploaded_row(rec, conf_key):
                 restored_status = 'GOOD'
                 restored_detail = 'uploaded to S3'
                 restored_s3_status = 'UPLOADED'
@@ -144,11 +153,11 @@ def _ensure_photos_loaded(conf_schema, conf_key):
         return
     preview_dir, good_dir, original_dir = conf_state.conf_dirs(conf_key)
     # Conference folders first (authoritative for this conference)
-    _scan_dir_for_entries(preview_dir, 'AUTO_UPDATED', conf_schema, 'cropped to 354x472', original_dir)
-    _scan_dir_for_entries(good_dir, 'GOOD', conf_schema, 'restored from disk', original_dir)
+    _scan_dir_for_entries(preview_dir, 'AUTO_UPDATED', conf_schema, 'cropped to 354x472', original_dir, conf_key)
+    _scan_dir_for_entries(good_dir, 'GOOD', conf_schema, 'restored from disk', original_dir, conf_key)
     # Legacy flat folders as fallback for pre-isolation files
-    _scan_dir_for_entries(LEGACY_PREVIEW, 'AUTO_UPDATED', conf_schema, 'cropped to 354x472', LEGACY_ORIGINAL)
-    _scan_dir_for_entries(LEGACY_GOOD, 'GOOD', conf_schema, 'restored from disk', LEGACY_ORIGINAL)
+    _scan_dir_for_entries(LEGACY_PREVIEW, 'AUTO_UPDATED', conf_schema, 'cropped to 354x472', LEGACY_ORIGINAL, conf_key)
+    _scan_dir_for_entries(LEGACY_GOOD, 'GOOD', conf_schema, 'restored from disk', LEGACY_ORIGINAL, conf_key)
     # Legacy originals: attach to entries missing original_path
     for legacy_orig in (LEGACY_ORIGINAL,):
         if not os.path.exists(legacy_orig):

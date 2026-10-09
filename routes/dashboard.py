@@ -35,33 +35,119 @@ def _new_entry(url, local_path, preview_path, status, detail, confidence, bbox, 
     }
 
 
-def _is_s3_uploaded(record):
-    """True if this delegate row already points to an uploaded S3 photo.
+def _is_app_uploaded(record, conf_key=None):
+    """True ONLY if this DB row is a photo uploaded by THIS app (not a raw S3 original).
 
-    Checks del_img_path for S3 markers (amazonaws.com / bucket / prefix URL)
-    plus the profile_photo_status=1 flag set by the S3 upload worker.
-    A manually re-cropped entry is in-memory only (DB still S3) — the worker
-    caller must NOT skip when the in-memory entry is MANUAL_UPDATED/PENDING.
+    App uploads always set:
+      del_img_path == s3_base_path(conf_key)  (https://<bucket>.s3.<region>.amazonaws.com/<prefix>/<conf_key>/)
+      del_img_filename == "<delegate_id>-<Name>-<Ymd>-<His>.jpg" (build_s3_key pattern)
+    A registration-form S3 original (different path/filename) must return False
+    so it goes through the normal download -> is_passport -> crop pipeline
+    instead of being faked as GOOD+UPLOADED.
     """
     try:
-        path = str((record or {}).get('del_img_path') or '')
-        low = path.lower().strip()
-        if not low:
+        rec = record or {}
+        path = str(rec.get('del_img_path') or '').strip()
+        fname = str(rec.get('del_img_filename') or '').strip()
+        if not path or not fname:
             return False
-        if 'amazonaws.com' in low:
+        low = path.lower().strip()
+        if 'amazonaws.com' not in low:
+            return False
+        # 1) Path must be this conference's app base path (when conf_key known).
+        if conf_key:
+            try:
+                from services import s3_service as _s3
+                expected = str(_s3.s3_base_path(conf_key) or '').strip().rstrip('/') + '/'
+                # Compare case-insensitively with trailing slash normalized.
+                if path.strip().rstrip('/') .lower() != expected.strip().rstrip('/').lower():
+                    return False
+            except Exception:
+                pass
+        else:
+            # Without conf_key, at least require bucket+prefix markers.
+            bucket = str(getattr(Config, 'S3_BUCKET', '') or '').strip().lower()
+            prefix = str(getattr(Config, 'S3_PREFIX', '') or 'delegate_photo').strip().strip('/').lower()
+            if bucket and bucket not in low:
+                return False
+            if prefix and prefix not in low:
+                return False
+        # 2) Filename must match app pattern: "<id>-<Name>-<8digits>-<6digits>.jpg"
+        import re as _re
+        try:
+            did = int(rec.get('delegate_id') or 0)
+        except (TypeError, ValueError):
+            did = 0
+        # Strict: starts with "<delegate_id>-" and ends with timestamp ".jpg"/".jpeg"
+        # (older app uploads preserved the original extension, e.g. .jpeg).
+        if did and not fname.startswith(f"{did}-"):
+            return False
+        if not _re.match(r'^.+-\d{8}-\d{6}\.jpe?g$', fname, _re.IGNORECASE):
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def _is_s3_uploaded(record, conf_key=None):
+    """Back-compat wrapper: any S3 URL (loose). Prefer _is_app_uploaded()."""
+    try:
+        path = str(((record or {}).get('del_img_path')) or '').lower().strip()
+        if not path:
+            return False
+        if 'amazonaws.com' in path:
             return True
         bucket = str(getattr(Config, 'S3_BUCKET', '') or '').strip().lower()
-        if bucket and bucket in low and low.startswith('http'):
+        if bucket and bucket in path and path.startswith('http'):
             return True
-        prefix = str(getattr(Config, 'S3_PREFIX', '') or 'delegate_photo').strip().strip('/').lower()
-        if prefix and prefix in low and low.startswith('http'):
-            return True
-        try:
-            if int((record or {}).get('profile_photo_status') or 0) == 1 and low.startswith('http'):
-                return True
-        except (TypeError, ValueError):
-            pass
         return False
+    except Exception:
+        return False
+
+
+def _crop_zoom_detail(local_path, bbox):
+    """Human-readable zoom info for AUTO detail, e.g. 'from 1200x1600 face 180px zoom x1.2'."""
+    try:
+        from PIL import Image as _Img
+        from config import Config as _Cfg
+        img = _Img.open(local_path)
+        W, H = img.size
+        _x, _y, _w, _h = bbox
+        out_h = _Cfg.OUTPUT_HEIGHT
+        scale = (_Cfg.FACE_TARGET_RATIO * out_h) / max(1, _h)
+        return f"cropped to 354x472 from {W}x{H} face {_h}px zoom x{scale:.2f}", scale, (W, H)
+    except Exception:
+        return "cropped to 354x472", 0, (0, 0)
+
+
+def _previews_identical(local_path, preview_path, threshold=8.0):
+    """True if the crop is visually a no-op (same framing, just resized)."""
+    try:
+        from PIL import Image as _Img
+        import numpy as _np
+        a = _Img.open(local_path).convert('L').resize((64, 64), _Img.BILINEAR)
+        b = _Img.open(preview_path).convert('L').resize((64, 64), _Img.BILINEAR)
+        diff = (abs(_np.asarray(a, dtype=float) - _np.asarray(b, dtype=float))).mean()
+        return diff < threshold
+    except Exception:
+        return False
+
+
+def _looks_like_app_file(record):
+    """Loose app-pattern check (any conference): '<id>-Name-Ymd-His.jpg' on S3."""
+    try:
+        import re as _re
+        path = str((record or {}).get('del_img_path') or '')
+        fname = str((record or {}).get('del_img_filename') or '').strip()
+        if 'amazonaws.com' not in path.lower():
+            return False
+        try:
+            did = int((record or {}).get('delegate_id') or 0)
+        except (TypeError, ValueError):
+            did = 0
+        if did and not fname.startswith(f"{did}-"):
+            return False
+        return bool(_re.match(r'^.+-\d{8}-\d{6}\.jpe?g$', fname, _re.IGNORECASE))
     except Exception:
         return False
 
@@ -102,11 +188,17 @@ def processing_worker(app, conf_id, conf_schema, conf_key=None, force=False):
                 for record in batch:
                     delegate_id = record['delegate_id']
                     url = build_photo_url(record['del_img_path'], record['del_img_filename'])
-                    # Skip already-uploaded S3 photos: never re-crop them on
+                    # Skip ONLY photos uploaded by THIS app (strict base-path +
+                    # "<id>-Name-timestamp.jpg" check): never re-crop them on
                     # re-processing, otherwise GOOD flips back to AUTO_UPDATED.
+                    # Raw S3 originals (registration uploads) return False here
+                    # and go through the normal crop pipeline below. As a safety
+                    # net, an app-pattern file from ANOTHER conference also
+                    # skips (already cropped, re-cropping would be a no-op that
+                    # shows identical ORIGINAL vs CROPPED).
                     # Manual re-crop sets in-memory MANUAL_UPDATED/PENDING, so
                     # respect that and re-process only when forced or re-edited.
-                    if not force and _is_s3_uploaded(record):
+                    if not force and (_is_app_uploaded(record, conf_key) or _looks_like_app_file(record)):
                         try:
                             _mem = conf_state.get_entry(conf_schema, delegate_id)
                         except Exception:
@@ -166,7 +258,12 @@ def processing_worker(app, conf_id, conf_schema, conf_key=None, force=False):
                         try:
                             preview_path = generate_passport_crop(local_path, bbox, delegate_id, conf_key=conf_key)
                             status = 'AUTO_UPDATED'
-                            detail = 'cropped to 354x472'
+                            detail, _scale, _orig = _crop_zoom_detail(local_path, bbox)
+                            try:
+                                if preview_path and _previews_identical(local_path, preview_path):
+                                    detail += " (minimal change - already close)"
+                            except Exception:
+                                pass
                             st['auto_updated'] += 1
                             st['auto_approved'] += 1
                         except Exception as e:

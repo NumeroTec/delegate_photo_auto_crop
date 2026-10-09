@@ -28,16 +28,18 @@ def is_passport_photo(image_path):
             return False, f"face status {detection['status']}", None
         bbox = detection['bbox']
         x, y, bw, bh = bbox
-        # Face height should be approx FACE_TARGET_RATIO * OUTPUT_HEIGHT (212px) with tolerance +-25%
+        # Face height should be approx FACE_TARGET_RATIO * OUTPUT_HEIGHT (212px).
+        # Tightened so far/small faces force AUTO crop (zoom) instead of GOOD:
+        # require ratio within +-0.10 AND not too small (min 0.38) for a
+        # passport-closeup. Previously +-0.12 allowed 0.33 (far face) as GOOD.
         face_ratio = bh / h
         target = Config.FACE_TARGET_RATIO
         # Top padding check: face top should be around TOP_PADDING_RATIO * out_h (94px)
         top_pad = y / h
-        # Allow 30% tolerance for real photos
-        if abs(face_ratio - target) > 0.12:  # 0.45 +-0.12 => 0.33-0.57
-            return False, f"face_ratio {face_ratio:.2f} != {target}", bbox
-        if abs(top_pad - Config.TOP_PADDING_RATIO) > 0.12:
-            return False, f"top_pad {top_pad:.2f} != {Config.TOP_PADDING_RATIO}", bbox
+        if abs(face_ratio - target) > 0.10 or face_ratio < 0.38:  # 0.38-0.55
+            return False, f"face_ratio {face_ratio:.2f} != {target} (need zoom crop)", bbox
+        if abs(top_pad - Config.TOP_PADDING_RATIO) > 0.10:
+            return False, f"top_pad {top_pad:.2f} != {Config.TOP_PADDING_RATIO} (need crop)", bbox
         # Centered check: face center x should be near image center
         face_cx = x + bw/2
         if abs(face_cx - w/2) / w > 0.15:
