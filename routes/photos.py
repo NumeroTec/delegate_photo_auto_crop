@@ -52,7 +52,10 @@ def _scan_dir_for_entries(d, status, conf_schema, detail, original_dir):
             conn = get_connection(database=conf_schema)
             try:
                 with conn.cursor() as cur:
-                    cur.execute("SELECT delegate_id, delegate_no, full_name, email, mobile, del_img_path, del_img_filename FROM delegates WHERE delegate_id=%s", (delegate_id,))
+                    try:
+                        cur.execute("SELECT delegate_id, delegate_no, full_name, email, mobile, del_img_path, del_img_filename, profile_photo_status FROM delegates WHERE delegate_id=%s", (delegate_id,))
+                    except Exception:
+                        cur.execute("SELECT delegate_id, delegate_no, full_name, email, mobile, del_img_path, del_img_filename FROM delegates WHERE delegate_id=%s", (delegate_id,))
                     row = cur.fetchone()
                     if row:
                         rec = row
@@ -78,7 +81,8 @@ def _scan_dir_for_entries(d, status, conf_schema, detail, original_dir):
         except Exception:
             orig_url = None
         # If DB row already points to S3 (migrated in a previous upload run),
-        # restore as GOOD + UPLOADED so it is never re-uploaded after restart.
+        # restore as GOOD + UPLOADED so it is never re-uploaded after restart
+        # and never re-cropped on the next Start Processing (worker skips S3).
         restored_status = status
         restored_detail = 'restored from disk' if status == 'GOOD' else detail
         restored_s3_status = 'PENDING'
@@ -86,7 +90,25 @@ def _scan_dir_for_entries(d, status, conf_schema, detail, original_dir):
         restored_s3_url = None
         try:
             db_path = str((rec or {}).get('del_img_path') or '')
-            if 's3' in db_path.lower():
+            low = db_path.lower().strip()
+            _is_s3 = False
+            if 'amazonaws.com' in low:
+                _is_s3 = True
+            else:
+                try:
+                    from config import Config as _Cfg
+                    _bucket = str(getattr(_Cfg, 'S3_BUCKET', '') or '').strip().lower()
+                    if _bucket and _bucket in low and low.startswith('http'):
+                        _is_s3 = True
+                    if not _is_s3:
+                        try:
+                            if int((rec or {}).get('profile_photo_status') or 0) == 1 and low.startswith('http'):
+                                _is_s3 = True
+                        except (TypeError, ValueError):
+                            pass
+                except Exception:
+                    pass
+            if _is_s3:
                 restored_status = 'GOOD'
                 restored_detail = 'uploaded to S3'
                 restored_s3_status = 'UPLOADED'

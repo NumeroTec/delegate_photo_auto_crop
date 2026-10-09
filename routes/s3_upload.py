@@ -240,6 +240,17 @@ def _upload_one(conf_schema, did, conf_key, force=False, csv_w=None, logger=None
         # Flip to GOOD only after S3 + DB commit both succeed
         entry['status'] = 'GOOD'
         entry['detail'] = 'uploaded to S3'
+        # Keep a copy in good/ so restart-restore finds it as GOOD even
+        # without the DB S3 check (preview/ scan = AUTO_UPDATED).
+        try:
+            _pv_dir, _gd_dir, _od_dir = conf_state.conf_dirs(conf_key)
+            _good_dest = os.path.join(_gd_dir, f"{did}.jpg")
+            if preview and os.path.exists(preview) and os.path.abspath(preview) != os.path.abspath(_good_dest):
+                import shutil
+                shutil.copyfile(preview, _good_dest)
+                entry['preview_path'] = _good_dest
+        except Exception:
+            pass
         # Refresh in-memory record so UI shows new filename
         rec['del_img_path'] = new_path
         rec['del_img_filename'] = new_filename
