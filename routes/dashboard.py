@@ -3,7 +3,7 @@ import threading
 import os
 from db.database import get_connection
 from services.photo_service import get_all_delegates, build_photo_url, download_image
-from services.conference_service import get_active_upcoming_conferences, get_conference_by_id
+from services.conference_service import get_active_upcoming_conferences, get_conference_by_id, get_registration_stats
 from services.face_detector import detect_face
 from services.crop_service import generate_passport_crop, is_passport_photo, copy_as_good
 from config import Config
@@ -167,9 +167,11 @@ def processing_worker(app, conf_id, conf_schema, conf_key=None, force=False):
             job['is_processing'] = True
             batch_size = app.config.get('BATCH_SIZE', 50)
             # Fetch delegates from per-conference DB if schema exists, otherwise filter by conference_id in primary DB
-            # For per-conference schemas, only approved delegates (del_status_id=2) with photos are processed — matches user query: SELECT * WHERE del_status_id=2 AND del_img_path IS NOT NULL
+            # Only verification-pending photos (profile_photo_status=0) of
+            # registered delegates (del_status_id=2) are auto-cropped.
+            # Done (2) and rejected (1) rows never enter the queue.
             if conf_schema:
-                delegates = get_all_delegates(database=conf_schema, filters={'del_status_id': 2})
+                delegates = get_all_delegates(database=conf_schema, filters={'del_status_id': 2, 'profile_photo_status': 0})
             else:
                 delegates = get_all_delegates(filters={'conference_id': conf_id})
             total = len(delegates)
@@ -225,6 +227,26 @@ def processing_worker(app, conf_id, conf_schema, conf_key=None, force=False):
                             _entry['s3_key'] = _s3_key
                             _entry['s3_url'] = url
                             conf_state.set_entry(conf_schema, delegate_id, _entry)
+                            # Already-cropped app file still flagged pending (0):
+                            # flip DB to done (2) so it leaves the pending queue.
+                            try:
+                                if int((record or {}).get('profile_photo_status') or 0) == 0:
+                                    _conn = get_connection(database=conf_schema)
+                                    try:
+                                        with _conn.cursor() as _cur:
+                                            _cur.execute("UPDATE delegates SET profile_photo_status=%s WHERE delegate_id=%s AND profile_photo_status=0", (2, delegate_id))
+                                        _conn.commit()
+                                    finally:
+                                        _conn.close()
+                                    try:
+                                        record['profile_photo_status'] = 2
+                                    except Exception:
+                                        pass
+                            except Exception as _e:
+                                try:
+                                    app.logger.warning(f"Skip-path flag flip failed for {delegate_id}: {_e}")
+                                except Exception:
+                                    pass
                             st['good'] += 1
                             st['processed'] += 1
                             continue
@@ -310,15 +332,21 @@ def dashboard():
     selected_conf = session.get('selected_conference')
     if selected_conf and selected_conf.get('conf_schema'):
         stats = conf_state.get_processing_job(selected_conf['conf_schema'])['status']
+        # Live registration / verification counts from DB (del_status_id=2 scope)
+        try:
+            db_stats = get_registration_stats(selected_conf['conf_schema'])
+        except Exception:
+            db_stats = {'registered': 0, 'photos': 0, 'done': 0, 'pending': 0, 'rejected': 0, 'no_photo': 0}
     else:
         stats = dict(conf_state.STATUS_DEFAULTS)
+        db_stats = {'registered': 0, 'photos': 0, 'done': 0, 'pending': 0, 'rejected': 0, 'no_photo': 0}
     # Fetch active & upcoming conferences ordered by start date
     try:
         conferences = get_active_upcoming_conferences()
     except Exception as e:
         conferences = []
         flash(f"Error loading conferences: {e}", "danger")
-    return render_template('dashboard.html', stats=stats, selected_conf=selected_conf, conferences=conferences)
+    return render_template('dashboard.html', stats=stats, selected_conf=selected_conf, conferences=conferences, db_stats=db_stats)
 
 @dashboard_bp.route('/start')
 def start_processing():
@@ -345,10 +373,12 @@ def start_processing():
     if thread and thread.is_alive():
         flash(f"Processing is already running for {selected.get('conf_name','')}. Other conferences can still run in parallel.", "info")
         return redirect(url_for('dashboard.dashboard'))
-    # Pre-check delegate count for immediate feedback
+    # Pre-check pending-verification count for immediate feedback.
+    # Only registered (del_status_id=2) + pending (profile_photo_status=0)
+    # photos enter the auto-crop queue; done (2) / rejected (1) are skipped.
     try:
         if conf_schema:
-            delegates_preview = get_all_delegates(database=conf_schema, filters={'del_status_id': 2})
+            delegates_preview = get_all_delegates(database=conf_schema, filters={'del_status_id': 2, 'profile_photo_status': 0})
         else:
             delegates_preview = get_all_delegates(filters={'conference_id': conf_id})
         total_preview = len(delegates_preview)
@@ -361,7 +391,7 @@ def start_processing():
         conf_state.reset_status(job['status'])
         # Clear any stale data for THIS conference only
         conf_state.clear_conference_data(conf_schema)
-        flash(f"No delegates with photos found for {selected.get('conf_name','')} (ID {conf_id}). Nothing to process.", "warning")
+        flash(f"No pending photo verifications for {selected.get('conf_name','')} (ID {conf_id}). Nothing to process.", "warning")
         return redirect(url_for('dashboard.dashboard'))
     # Capture app object for thread
     app = current_app._get_current_object()
@@ -374,7 +404,7 @@ def start_processing():
     thread = threading.Thread(target=processing_worker, args=(app, conf_id, conf_schema, conf_key, force), daemon=True)
     job['thread'] = thread
     thread.start()
-    flash(f"Processing started for {selected.get('conf_name','')} (ID {conf_id}) — {total_preview} delegates queued.", "success")
+    flash(f"Processing started for {selected.get('conf_name','')} (ID {conf_id}) — {total_preview} pending verifications queued.", "success")
     return redirect(url_for('dashboard.dashboard'))
 
 @dashboard_bp.route('/status')

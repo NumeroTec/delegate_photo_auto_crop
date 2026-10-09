@@ -250,6 +250,8 @@ def restore_log(log_id):
                 rec = entry.get('record', {}) or {}
                 rec['del_img_path'] = log_row.get('del_img_path')
                 rec['del_img_filename'] = log_row.get('del_img_filename')
+                # Restore resets DB flag to pending (0) — keep badge truthful
+                rec['profile_photo_status'] = 0
                 entry['record'] = rec
                 try:
                     entry['original_url'] = build_photo_url(

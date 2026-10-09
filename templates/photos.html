@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Photos – Passport Photo Auto‑Crop Manager{% endblock %}
+{% block title %}Photos – Delegate Photo Management Dashboard{% endblock %}
 {% block content %}
 
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.css" />
@@ -19,17 +19,83 @@
   </div>
 </div>
 
-<!-- Counts -->
+<!-- Registration Overview — live counts from DB (same row as dashboard) -->
 <div class="row g-3 mb-4">
   <div class="col-6 col-md-4 col-xl">
-    <a href="{{ url_for('photos.photos_list', status='all', per_page=per_page) }}" class="text-decoration-none">
-      <div class="card card-modern text-center py-3 {% if status_filter=='all' %}border-primary border-2{% endif %}">
-        <div class="small text-muted">Total Photos</div>
-        <div class="h4 fw-bold mb-0">{{ counts.total }}</div>
-        <span class="badge {% if status_filter=='all' %}bg-primary{% else %}bg-secondary{% endif %} mt-1">All</span>
-      </div>
+    <a href="{{ url_for('photos.photos_list', view='registered') }}" class="text-decoration-none">
+    <div class="card card-modern text-center py-3 h-100 {% if db_view=='registered' %}border-secondary border-2{% endif %}">
+      <div class="stat-icon bg-secondary bg-opacity-10 text-secondary mx-auto mb-2"><i class="bi bi-people"></i></div>
+      <div class="h4 fw-bold mb-0 text-dark">{{ db_stats.registered }}</div>
+      <div class="small text-muted">Registered Delegates</div>
+      <small class="text-muted">del_status_id = 2 · click to view</small>
+    </div>
     </a>
   </div>
+  <div class="col-6 col-md-4 col-xl">
+    <a href="{{ url_for('photos.photos_list', view='photos') }}" class="text-decoration-none">
+    <div class="card card-modern text-center py-3 h-100 {% if db_view=='photos' %}border-primary border-2{% endif %}">
+      <div class="stat-icon bg-primary bg-opacity-10 text-primary mx-auto mb-2"><i class="bi bi-images"></i></div>
+      <div class="h4 fw-bold mb-0 text-primary">{{ db_stats.photos }}</div>
+      <div class="small text-muted">Total Photos</div>
+      <small class="text-muted">filename present · click to view</small>
+    </div>
+    </a>
+  </div>
+  <div class="col-6 col-md-4 col-xl">
+    <a href="{{ url_for('photos.photos_list', view='done') }}" class="text-decoration-none">
+    <div class="card card-modern text-center py-3 h-100 {% if db_view=='done' %}border-success border-2{% endif %}">
+      <div class="stat-icon bg-success bg-opacity-10 text-success mx-auto mb-2"><i class="bi bi-patch-check"></i></div>
+      <div class="h4 fw-bold mb-0 text-success">{{ db_stats.done }}</div>
+      <div class="small text-muted">Verification Done</div>
+      <small class="text-muted">status = 2 · click to view</small>
+    </div>
+    </a>
+  </div>
+  <div class="col-6 col-md-4 col-xl">
+    <div class="card card-modern text-center pt-3 pb-3 h-100 border-warning {% if db_view=='pending' %}border-2{% endif %}">
+      <a href="{{ url_for('photos.photos_list', view='pending') }}" class="text-decoration-none">
+        <div class="stat-icon bg-warning bg-opacity-10 text-warning mx-auto mb-2"><i class="bi bi-hourglass-split"></i></div>
+        <div class="h4 fw-bold mb-0 text-warning">{{ db_stats.pending }}</div>
+        <div class="small text-muted">Verification Pending</div>
+        <small class="text-muted">status = 0 · click to view</small>
+      </a>
+      <div class="px-3">
+      <a href="{{ url_for('dashboard.start_processing') }}"
+         class="btn btn-sm w-100 mt-2 {% if db_stats.pending %}btn-primary{% else %}btn-outline-secondary disabled{% endif %}"
+         {% if not db_stats.pending %}aria-disabled="true" onclick="return false;"{% endif %}>
+        <i class="bi bi-lightning-charge me-1"></i> Start Processing{% if db_stats.pending %} ({{ db_stats.pending }}){% endif %}
+      </a>
+      {% if not db_stats.pending %}
+      <small class="text-muted mt-1">nothing to process</small>
+      {% endif %}
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-4 col-xl">
+    <a href="{{ url_for('photos.photos_list', view='rejected') }}" class="text-decoration-none">
+    <div class="card card-modern text-center py-3 h-100 {% if db_view=='rejected' %}border-danger border-2{% endif %}">
+      <div class="stat-icon bg-danger bg-opacity-10 text-danger mx-auto mb-2"><i class="bi bi-x-circle"></i></div>
+      <div class="h4 fw-bold mb-0 text-danger">{{ db_stats.rejected }}</div>
+      <div class="small text-muted">Rejected Photos</div>
+      <small class="text-muted">status = 1 · click to view</small>
+    </div>
+    </a>
+  </div>
+  <div class="col-6 col-md-4 col-xl">
+    <a href="{{ url_for('photos.photos_list', view='no_photo') }}" class="text-decoration-none">
+    <div class="card card-modern text-center py-3 h-100 {% if db_view=='no_photo' %}border-secondary border-2{% endif %}">
+      <div class="stat-icon bg-secondary bg-opacity-10 text-secondary mx-auto mb-2"><i class="bi bi-image"></i></div>
+      <div class="h4 fw-bold mb-0 text-secondary">{{ db_stats.no_photo }}</div>
+      <div class="small text-muted">No Photos</div>
+      <small class="text-muted">no filename · click to view</small>
+    </div>
+    </a>
+  </div>
+</div>
+
+<!-- Counts (processing-session statuses; hidden in DB views — the overview row above already shows DB numbers) -->
+{% if not db_view %}
+<div class="row g-3 mb-4">
   <div class="col-6 col-md-4 col-xl">
     <a href="{{ url_for('photos.photos_list', status='good', per_page=per_page) }}" class="text-decoration-none">
       <div class="card card-modern text-center py-3 {% if status_filter=='good' %}border-success border-2{% endif %}">
@@ -71,26 +137,30 @@
     </a>
   </div>
 </div>
+{% endif %}
+
+{% if db_view %}
+<!-- DB view banner (opened from a dashboard overview card) -->
+<div class="alert alert-info d-flex flex-wrap align-items-center justify-content-between gap-2 border-0 shadow-sm">
+  <div><i class="bi bi-database me-1"></i>Showing <strong>{{ db_view_label }}</strong> from database ({{ total }}) — matches the dashboard count.</div>
+  <a href="{{ url_for('photos.photos_list') }}" class="btn btn-sm btn-outline-primary">Back to processed view</a>
+</div>
+{% endif %}
 
 {% if counts.total==0 %}
 <div class="card card-modern p-5 text-center">
   <i class="bi bi-inbox display-4 text-muted"></i>
-  <p class="text-muted mt-3">No photos processed yet. Go to <a href="{{ url_for('dashboard.dashboard') }}">Dashboard</a> and click <strong>Start Processing</strong>.</p>
+  <p class="text-muted mt-3">{% if db_view %}No {{ db_view_label|lower }} found.{% else %}No photos processed yet. Go to <a href="{{ url_for('dashboard.dashboard') }}">Dashboard</a> and click <strong>Start Processing</strong>.{% endif %}</p>
 </div>
 {% else %}
 
 <!-- Filter + Search -->
 <div class="card card-modern mb-4">
   <div class="card-body d-flex flex-wrap gap-3 align-items-center justify-content-between">
-    <div class="btn-group" role="group">
-      <a href="{{ url_for('photos.photos_list', status='all', per_page=per_page) }}" class="btn btn-sm {% if status_filter=='all' %}btn-primary{% else %}btn-outline-secondary{% endif %}">All ({{counts.total}})</a>
-      <a href="{{ url_for('photos.photos_list', status='good', per_page=per_page) }}" class="btn btn-sm {% if status_filter=='good' %}btn-success{% else %}btn-outline-success{% endif %}">Good ({{counts.good}})</a>
-      <a href="{{ url_for('photos.photos_list', status='auto_updated', per_page=per_page) }}" class="btn btn-sm {% if status_filter=='auto_updated' %}btn-primary{% else %}btn-outline-primary{% endif %}">Auto Updated ({{counts.auto_updated}})</a>
-      <a href="{{ url_for('photos.photos_list', status='manual_updated', per_page=per_page) }}" class="btn btn-sm {% if status_filter=='manual_updated' %}btn-info{% else %}btn-outline-info{% endif %}">Manual Updated ({{counts.manual_updated}})</a>
-      <a href="{{ url_for('photos.photos_list', status='failed', per_page=per_page) }}" class="btn btn-sm {% if status_filter=='failed' %}btn-danger{% else %}btn-outline-danger{% endif %}">Failed ({{counts.failed}})</a>
-    </div>
+    <div class="text-muted small">{% if db_view %}Search within {{ db_view_label }}{% else %}Use the status cards above to filter · search below{% endif %}</div>
     <form method="get" class="d-flex gap-2">
       <input type="hidden" name="status" value="{{ status_filter }}">
+      {% if db_view %}<input type="hidden" name="view" value="{{ db_view }}">{% endif %}
       <select name="per_page" class="form-select form-select-sm" style="width:auto;" onchange="this.form.submit()">
         <option value="100" {% if per_page==100 %}selected{% endif %}>100</option>
         <option value="200" {% if per_page==200 %}selected{% endif %}>200</option>
@@ -99,12 +169,12 @@
       </select>
       <input type="text" name="q" value="{{ search }}" placeholder="Search name, email, mobile..." class="form-control form-control-sm" style="min-width:260px;">
       <button class="btn btn-sm btn-outline-primary" type="submit"><i class="bi bi-search"></i></button>
-      {% if search %}<a href="{{ url_for('photos.photos_list', status=status_filter, per_page=per_page) }}" class="btn btn-sm btn-outline-secondary">Clear</a>{% endif %}
+      {% if search %}<a href="{{ url_for('photos.photos_list', status=status_filter, per_page=per_page, view=db_view) }}" class="btn btn-sm btn-outline-secondary">Clear</a>{% endif %}
     </form>
   </div>
 </div>
 
-<div class="text-muted small mb-2">Showing {{ items|length }} of {{ total }} photos — page {{ page }} of {{ total_pages }} — status: <strong>{{ status_filter }}</strong> {% if search %}· search: "{{ search }}"{% endif %}</div>
+<div class="text-muted small mb-2">Showing {{ items|length }} of {{ total }} photos — page {{ page }} of {{ total_pages }} — {% if db_view %}view: <strong>{{ db_view_label }}</strong>{% else %}status: <strong>{{ status_filter }}</strong>{% endif %} {% if search %}· search: "{{ search }}"{% endif %}</div>
 
 <!-- S3 Bulk Upload (AUTO_UPDATED + MANUAL_UPDATED; old DB photo backed up to del_profile_logs) -->
 <div class="card card-modern mb-4 border-0" style="border-left:4px solid #0d6efd !important;">
@@ -168,7 +238,7 @@
         </div>
         <div class="flex-fill bg-white d-flex flex-column align-items-center justify-content-center p-2" style="width:50%;">
           <small class="text-muted mb-1" style="font-size:0.7rem;">
-            {% if item.status=='GOOD' %}PASSPORT GOOD{% elif item.status=='MANUAL_UPDATED' %}MANUAL 354×472{% elif item.status=='AUTO_UPDATED' %}CROPPED 354×472{% else %}CROP FAILED{% endif %}
+            {% if item.status=='GOOD' %}PASSPORT GOOD{% elif item.status=='MANUAL_UPDATED' %}MANUAL 354×472{% elif item.status=='AUTO_UPDATED' %}CROPPED 354×472{% elif item.status=='PENDING' %}PENDING VERIFICATION{% elif item.status=='REJECTED' %}REJECTED{% elif item.status=='NO_PHOTO' %}NO PHOTO{% else %}CROP FAILED{% endif %}
           </small>
           {% if item.preview_path %}
             <img src="{{ url_for('photos.serve_image', filename=preview_file) }}" alt="cropped" class="img-fluid rounded border" style="max-height:150px; object-fit:contain; {% if item.status=='GOOD' %}border-color:#198754 !important;{% elif item.status=='FAILED' %}border-color:#dc3545 !important;{% endif %}">
@@ -191,20 +261,37 @@
         <div class="d-flex justify-content-between align-items-start mb-1">
           <h6 class="mb-0 fw-semibold" style="font-size:0.95rem;">{{ rec.full_name or '—' }}</h6>
           {% if item.status=='GOOD' %}
-            <span class="badge bg-success"><i class="bi bi-check me-1"></i>good</span>
+            <span class="badge bg-success"><i class="bi bi-patch-check me-1"></i>verification done</span>
           {% elif item.status=='AUTO_UPDATED' %}
             <span class="badge bg-primary"><i class="bi bi-magic me-1"></i>auto_updated</span>
           {% elif item.status=='MANUAL_UPDATED' %}
             <span class="badge bg-info text-dark"><i class="bi bi-scissors me-1"></i>manual_updated</span>
+          {% elif item.status=='PENDING' %}
+            <span class="badge bg-warning text-dark"><i class="bi bi-hourglass-split me-1"></i>pending</span>
+          {% elif item.status=='REJECTED' %}
+            <span class="badge bg-danger"><i class="bi bi-x-circle me-1"></i>rejected</span>
+          {% elif item.status=='NO_PHOTO' %}
+            <span class="badge bg-secondary"><i class="bi bi-image me-1"></i>no photo</span>
           {% else %}
             <span class="badge bg-danger"><i class="bi bi-exclamation-triangle me-1"></i>failed</span>
           {% endif %}
         </div>
         <div class="small text-muted mb-2">#{{ rec.delegate_no or delegate_id }} · {{ item.detail }}</div>
+        <div class="mb-2 d-flex flex-wrap gap-1 align-items-center" id="ps-wrap-{{ delegate_id }}">
+          <span class="small text-muted">Photo status:</span>
+          <select class="form-select form-select-sm d-inline-block" style="width:auto; min-width:170px;" id="ps-select-{{ delegate_id }}">
+            <option value="0" {% if rec.profile_photo_status == 0 or rec.profile_photo_status == '0' %}selected{% endif %}>Pending (0)</option>
+            <option value="2" {% if rec.profile_photo_status == 2 or rec.profile_photo_status == '2' %}selected{% endif %}>Done (2)</option>
+            <option value="1" {% if rec.profile_photo_status == 1 or rec.profile_photo_status == '1' %}selected{% endif %}>Rejected (1)</option>
+          </select>
+          <button type="button" class="btn btn-sm btn-success" id="ps-save-{{ delegate_id }}" title="Save photo status" onclick="savePhotoStatus({{ delegate_id }}, this)">
+            <i class="bi bi-check-lg"></i>
+          </button>
+          <span class="small" id="ps-msg-{{ delegate_id }}" style="display:none;"></span>
+        </div>
         <div class="mb-2">
           {% if item.s3_status == 'UPLOADED' %}
-            <span class="badge bg-success"><i class="bi bi-cloud-check me-1"></i>S3 uploaded</span>
-            {% if item.s3_url %}<a href="{{ item.s3_url }}" target="_blank" class="small ms-1">view</a>{% endif %}
+            {% if item.s3_url %}<a href="{{ item.s3_url }}" target="_blank" class="small">S3 view</a>{% endif %}
           {% elif item.s3_status == 'FAILED' %}
             <span class="badge bg-danger" title="{{ item.s3_error or '' }}"><i class="bi bi-cloud-slash me-1"></i>S3 failed</span>
           {% else %}
@@ -216,8 +303,8 @@
           <div><i class="bi bi-phone me-1 text-muted"></i>{{ rec.mobile or 'no mobile' }}</div>
           <div class="text-muted" style="font-size:0.8rem;">ID {{ delegate_id }} · {{ rec.del_img_filename or '' }}</div>
         </div>
-        <button class="btn btn-sm btn-primary w-100 mt-3" onclick='openCropModal({{ delegate_id }}, {{ rec.full_name|tojson }})'>
-          <i class="bi bi-crop me-1"></i>Crop
+        <button class="btn btn-sm {% if item.status=='NO_PHOTO' %}btn-warning{% else %}btn-primary{% endif %} w-100 mt-3" onclick='openCropModal({{ delegate_id }}, {{ rec.full_name|tojson }}{% if item.status=='NO_PHOTO' %}, "upload"{% endif %})'>
+          {% if item.status=='NO_PHOTO' %}<i class="bi bi-cloud-upload me-1"></i>Upload & Crop{% else %}<i class="bi bi-crop me-1"></i>Crop{% endif %}
         </button>
         {% if item.status in ('AUTO_UPDATED', 'MANUAL_UPDATED') and item.preview_path %}
         <button id="s3-single-{{ delegate_id }}" class="btn btn-sm btn-outline-success w-100 mt-2" onclick="uploadSinglePhoto({{ delegate_id }}, this)">
@@ -232,24 +319,24 @@
 </div>
 
 {% if items|length == 0 %}
-<div class="alert alert-info mt-4">No photos match status "{{ status_filter }}" {% if search %}and search "{{ search }}"{% endif %}.</div>
+<div class="alert alert-info mt-4">No photos match {% if db_view %}view "{{ db_view_label }}"{% else %}status "{{ status_filter }}"{% endif %} {% if search %}and search "{{ search }}"{% endif %}.</div>
 {% endif %}
 
 <!-- Pagination -->
 {% if total_pages > 1 %}
 <nav class="mt-4">
   <ul class="pagination justify-content-center">
-    <li class="page-item {% if page<=1 %}disabled{% endif %}"><a class="page-link" href="{{ url_for('photos.photos_list', status=status_filter, page=page-1, per_page=per_page, q=search) }}">Prev</a></li>
+    <li class="page-item {% if page<=1 %}disabled{% endif %}"><a class="page-link" href="{{ url_for('photos.photos_list', status=status_filter, page=page-1, per_page=per_page, q=search, view=db_view) }}">Prev</a></li>
     {% for p in range(1, total_pages+1) %}
       {% if p==page %}
         <li class="page-item active"><span class="page-link">{{ p }}</span></li>
       {% elif p<=3 or p>total_pages-3 or (p>=page-1 and p<=page+1) %}
-        <li class="page-item"><a class="page-link" href="{{ url_for('photos.photos_list', status=status_filter, page=p, per_page=per_page, q=search) }}">{{ p }}</a></li>
+        <li class="page-item"><a class="page-link" href="{{ url_for('photos.photos_list', status=status_filter, page=p, per_page=per_page, q=search, view=db_view) }}">{{ p }}</a></li>
       {% elif p==4 and page>5 or p==total_pages-3 and page<total_pages-4 %}
         <li class="page-item disabled"><span class="page-link">…</span></li>
       {% endif %}
     {% endfor %}
-    <li class="page-item {% if page>=total_pages %}disabled{% endif %}"><a class="page-link" href="{{ url_for('photos.photos_list', status=status_filter, page=page+1, per_page=per_page, q=search) }}">Next</a></li>
+    <li class="page-item {% if page>=total_pages %}disabled{% endif %}"><a class="page-link" href="{{ url_for('photos.photos_list', status=status_filter, page=page+1, per_page=per_page, q=search, view=db_view) }}">Next</a></li>
   </ul>
 </nav>
 {% endif %}
@@ -346,10 +433,23 @@ let croppedUrl = null;
 let uploadedDataUrl = null;
 
 let pendingImageUrl = null;
-function openCropModal(delegateId, fullName) {
+let pendingSource = null;
+function _activateTab(src) {
+  // Toggle source tabs/panes without triggering switchSource (no image load).
+  for (const name of ['original', 'cropped', 'upload']) {
+    const on = (name === src);
+    document.getElementById('tab-' + name).classList.toggle('active', on);
+    document.getElementById('pane-' + name).classList.toggle('show', on);
+    document.getElementById('pane-' + name).classList.toggle('active', on);
+  }
+  currentSource = src;
+}
+function openCropModal(delegateId, fullName, src) {
   currentDelegateId = delegateId;
   uploadedDataUrl = null;
   pendingImageUrl = null;
+  // NO_PHOTO cards pass "upload" so the modal opens on the Upload New tab.
+  pendingSource = (src === 'upload' || src === 'cropped' || src === 'original') ? src : null;
   document.getElementById('cropModalName').textContent = fullName || '';
   document.getElementById('cropModalId').textContent = '(ID ' + delegateId + ')';
   document.getElementById('uploadInput').value = '';
@@ -363,15 +463,22 @@ function openCropModal(delegateId, fullName) {
     .then(data => {
       originalUrl = data.original_url;
       croppedUrl = data.cropped_url;
-      currentSource = 'original';
-      // Ensure Original tab is active (without triggering switchSource early)
-      document.getElementById('tab-original').classList.add('active');
-      document.getElementById('tab-cropped').classList.remove('active');
-      document.getElementById('tab-upload').classList.remove('active');
-      document.getElementById('pane-original').classList.add('show','active');
-      document.getElementById('pane-cropped').classList.remove('show','active');
-      document.getElementById('pane-upload').classList.remove('show','active');
-      pendingImageUrl = originalUrl;
+      const want = pendingSource || 'original';
+      pendingSource = null;
+      // Activate the requested tab (without triggering switchSource early)
+      _activateTab(want);
+      if (want === 'upload') {
+        pendingImageUrl = null;
+        // If modal already fully shown, show upload placeholder now;
+        // otherwise the shown-event handler below will do it.
+        if (modalEl.classList.contains('show')) {
+          switchSource('upload');
+        } else {
+          pendingSource = 'upload';
+        }
+        return;
+      }
+      pendingImageUrl = (want === 'cropped') ? croppedUrl : originalUrl;
       // If modal already fully shown, load immediately; otherwise wait for shown event
       if (modalEl.classList.contains('show')) {
         const url = pendingImageUrl; pendingImageUrl = null;
@@ -380,6 +487,11 @@ function openCropModal(delegateId, fullName) {
     })
     .catch(e => {
       console.error(e);
+      if (pendingSource) {
+        // Keep the requested tab active even when info fetch fails.
+        try { _activateTab(pendingSource); } catch(_e) {}
+        pendingSource = null;
+      }
       pendingImageUrl = null;
       loadImageForCropper(null);
     });
@@ -540,6 +652,12 @@ function saveCrop() {
 
 // Fix small preview on open: load pending image after modal is fully visible
 document.getElementById('cropModal').addEventListener('shown.bs.modal', function(){
+  if (pendingSource) {
+    const src = pendingSource;
+    pendingSource = null;
+    switchSource(src);
+    return;
+  }
   if (pendingImageUrl) {
     const url = pendingImageUrl;
     pendingImageUrl = null;
@@ -555,6 +673,7 @@ document.getElementById('cropModal').addEventListener('hidden.bs.modal', functio
   destroyCropper();
   document.getElementById('cropperImage').removeAttribute('src');
   pendingImageUrl = null;
+  pendingSource = null;
 });
 
 // ---- S3 bulk upload (checked boxes only) ----
@@ -698,6 +817,40 @@ function uploadSinglePhoto(delegateId, btn) {
     console.error(err);
     btn.disabled = false;
     btn.innerHTML = '<i class="bi bi-cloud-upload me-1"></i>Upload to S3';
+    if (msg) msg.innerHTML = '<span class="text-danger">Network error</span>';
+  });
+}
+
+// ---- Per-delegate photo status dropdown + save tick ----
+function savePhotoStatus(delegateId, btn) {
+  const sel = document.getElementById('ps-select-' + delegateId);
+  const msg = document.getElementById('ps-msg-' + delegateId);
+  const val = sel ? parseInt(sel.value, 10) : NaN;
+  if (isNaN(val) || ![0,1,2].includes(val)) { alert('Pick Pending / Done / Rejected first'); return; }
+  const orig = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+  if (msg) { msg.style.display = 'inline'; msg.innerHTML = '<span class="text-muted">Saving...</span>'; }
+  fetch(`/photos/update_status/${delegateId}`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({status: val})
+  })
+  .then(r => r.json().then(d => ({ok: r.ok, data: d})))
+  .then(({ok, data}) => {
+    btn.disabled = false;
+    btn.innerHTML = orig;
+    if (ok && data.success) {
+      if (msg) msg.innerHTML = '<span class="text-success"><i class="bi bi-check-circle me-1"></i>Saved</span>';
+      setTimeout(() => { if (msg) msg.style.display = 'none'; }, 2000);
+    } else {
+      if (msg) msg.innerHTML = '<span class="text-danger">Failed: ' + ((data && data.error) || 'unknown') + '</span>';
+    }
+  })
+  .catch(err => {
+    console.error(err);
+    btn.disabled = false;
+    btn.innerHTML = orig;
     if (msg) msg.innerHTML = '<span class="text-danger">Network error</span>';
   });
 }

@@ -177,8 +177,9 @@ def _backup_and_update(conf_schema, delegate_id, new_path, new_filename, conf_id
             if 'is_photo_upload_at' in del_cols:
                 sets.append("is_photo_upload_at=NOW()")
             if 'profile_photo_status' in del_cols:
+                # S3 upload = verification done (2). Pending = 0, rejected = 1.
                 sets.append("profile_photo_status=%s")
-                params.append(1)
+                params.append(2)
             if not sets:
                 raise ValueError('delegates has no photo columns to update')
             params.append(delegate_id)
@@ -254,6 +255,8 @@ def _upload_one(conf_schema, did, conf_key, force=False, csv_w=None, logger=None
         # Refresh in-memory record so UI shows new filename
         rec['del_img_path'] = new_path
         rec['del_img_filename'] = new_filename
+        # Keep DB photo-status badge truthful: upload = verification done (2)
+        rec['profile_photo_status'] = 2
         try:
             job = conf_state.get_processing_job(conf_schema)
             job['status']['good'] = job['status'].get('good', 0) + 1

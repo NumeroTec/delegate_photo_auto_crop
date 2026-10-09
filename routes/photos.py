@@ -4,6 +4,7 @@ import base64
 from io import BytesIO
 from PIL import Image
 from routes import state as conf_state
+from services.conference_service import get_registration_stats
 
 photos_bp = Blueprint('photos', __name__, url_prefix='/photos')
 
@@ -186,6 +187,115 @@ def _find_file(filename, conf_key):
     return None
 
 
+def _find_preview_for(delegate_id, conf_key):
+    """Locate this delegate's cropped preview ({delegate_id}.jpg preferred)."""
+    found = _find_file(f"{delegate_id}.jpg", conf_key)
+    if found:
+        return found
+    # Fallback: any {delegate_id}.* image in preview/good dirs
+    try:
+        preview_dir, good_dir, _od = conf_state.conf_dirs(conf_key)
+        for d in (preview_dir, good_dir, LEGACY_PREVIEW, LEGACY_GOOD):
+            if not os.path.exists(d):
+                continue
+            for fname in os.listdir(d):
+                if fname.startswith(f"{delegate_id}.") and fname.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
+                    return os.path.join(d, fname)
+    except Exception:
+        pass
+    return None
+
+
+DB_VIEWS = ('registered', 'photos', 'pending', 'done', 'rejected', 'no_photo')
+
+DB_VIEW_LABELS = {
+    'registered': 'Registered Delegates',
+    'photos': 'Total Photos',
+    'pending': 'Verification Pending',
+    'done': 'Verification Done',
+    'rejected': 'Rejected Photos',
+    'no_photo': 'No Photos',
+}
+
+
+def _db_view_entries(conf_schema, conf_key, view):
+    """Build photo-list items straight from the delegates table.
+
+    Used by dashboard overview-card links (?view=pending etc.) so counts
+    always match the DB, even before Start Processing runs. Display status
+    is derived from profile_photo_status: 2->GOOD, 0->PENDING, 1->REJECTED.
+    """
+    if view == 'photos':
+        where = "del_status_id = 2 AND del_img_filename IS NOT NULL AND del_img_filename != ''"
+    elif view == 'pending':
+        where = "del_status_id = 2 AND profile_photo_status = 0 AND del_img_filename IS NOT NULL AND del_img_filename != ''"
+    elif view == 'done':
+        where = "del_status_id = 2 AND profile_photo_status = 2"
+    elif view == 'rejected':
+        where = "del_status_id = 2 AND profile_photo_status = 1"
+    elif view == 'no_photo':
+        where = "del_status_id = 2 AND (del_img_filename IS NULL OR del_img_filename = '')"
+    else:  # registered
+        where = "del_status_id = 2"
+    try:
+        from db.database import get_connection
+        conn = get_connection(database=conf_schema)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(f"""SELECT delegate_id, delegate_no, full_name, email, mobile,
+                                       del_img_path, del_img_filename, profile_photo_status
+                                FROM delegates WHERE {where} ORDER BY delegate_id""")
+                rows = cur.fetchall() or []
+        finally:
+            conn.close()
+    except Exception:
+        return []
+    from services.photo_service import build_photo_url
+    items = []
+    for rec in rows:
+        did = rec.get('delegate_id')
+        try:
+            flag = int(rec.get('profile_photo_status')) if rec.get('profile_photo_status') is not None else -1
+        except (TypeError, ValueError):
+            flag = -1
+        if flag == 2:
+            status, detail = 'GOOD', 'verified (status 2)'
+        elif flag == 1:
+            status, detail = 'REJECTED', 'rejected (status 1)'
+        elif not (rec.get('del_img_filename') or '').strip():
+            status, detail = 'NO_PHOTO', 'no photo uploaded'
+        else:
+            status, detail = 'PENDING', 'pending verification (status 0)'
+        try:
+            orig_url = build_photo_url(rec.get('del_img_path'), rec.get('del_img_filename'))
+        except Exception:
+            orig_url = None
+        s3_status, s3_key, s3_url = 'PENDING', None, None
+        try:
+            if _is_app_uploaded_row(rec, conf_key):
+                s3_status = 'UPLOADED'
+                s3_url = orig_url
+                if orig_url and '.amazonaws.com/' in orig_url:
+                    s3_key = orig_url.split('.amazonaws.com/', 1)[1]
+        except Exception:
+            pass
+        items.append({
+            'record': rec,
+            'preview_path': _find_preview_for(did, conf_key),
+            'original_path': _find_original(did, conf_key),
+            'original_url': orig_url,
+            'status': status,
+            'detail': detail,
+            'bbox': None,
+            's3_status': s3_status,
+            's3_key': s3_key,
+            's3_url': s3_url,
+            's3_error': '',
+            'uploaded_at': None,
+        })
+    return items
+
+
 def _find_original(delegate_id, conf_key):
     """Locate {delegate_id}_original.* : conference folder first, then legacy."""
     _pv, _gd, original_dir = conf_state.conf_dirs(conf_key)
@@ -207,7 +317,15 @@ def photos_list():
     conf_schema, conf_key, redir = _require_sel()
     if redir:
         return redir
+    # Live registration / verification counts (same row as dashboard)
+    try:
+        db_stats = get_registration_stats(conf_schema)
+    except Exception:
+        db_stats = {'registered': 0, 'photos': 0, 'done': 0, 'pending': 0, 'rejected': 0, 'no_photo': 0}
     status_filter = request.args.get('status', 'all')  # good, auto_updated, manual_updated, failed, all
+    db_view = request.args.get('view', '').strip().lower()  # overview: registered|photos|pending|done|rejected|no_photo
+    if db_view not in DB_VIEWS:
+        db_view = ''
     page = int(request.args.get('page', 1))
     per_page = int(request.args.get('per_page', 100))
     # Clamp per_page to valid range
@@ -216,29 +334,37 @@ def photos_list():
         per_page = 100
     search = request.args.get('q', '').strip().lower()
 
-    _ensure_photos_loaded(conf_schema, conf_key)
-    entries = conf_state.scoped_entries(conf_schema)
-    # One-time migration: older manual crops were stored as AUTO_UPDATED
-    # with detail 'manual crop 354x472' — flip them to MANUAL_UPDATED.
-    for _d in entries:
-        if _d.get('status') == 'AUTO_UPDATED' and _d.get('detail') == 'manual crop 354x472':
-            _d['status'] = 'MANUAL_UPDATED'
-    all_items = entries
-
-    # Filter by status
-    if status_filter != 'all':
-        # Map legacy: good=GOOD, auto_updated=AUTO_UPDATED, manual_updated=MANUAL_UPDATED, failed=FAILED
-        status_map = {
-            'good': ['GOOD'],
-            'auto_updated': ['AUTO_UPDATED'],
-            'manual_updated': ['MANUAL_UPDATED'],
-            'auto_updated_legacy': ['OK'],
-            'failed': ['FAILED'],
-        }
-        allowed = status_map.get(status_filter, [status_filter.upper()])
-        filtered = [d for d in all_items if d.get('status') in allowed]
-    else:
+    if db_view:
+        # DB-backed view for dashboard overview cards: always matches DB counts.
+        # No disk-restore here: leftover preview/good files from older runs
+        # would otherwise fabricate AUTO_UPDATED/GOOD entries (and counts)
+        # even though Start Processing never ran in this session.
+        all_items = _db_view_entries(conf_schema, conf_key, db_view)
         filtered = all_items
+    else:
+        _ensure_photos_loaded(conf_schema, conf_key)
+        entries = conf_state.scoped_entries(conf_schema)
+        # One-time migration: older manual crops were stored as AUTO_UPDATED
+        # with detail 'manual crop 354x472' — flip them to MANUAL_UPDATED.
+        for _d in entries:
+            if _d.get('status') == 'AUTO_UPDATED' and _d.get('detail') == 'manual crop 354x472':
+                _d['status'] = 'MANUAL_UPDATED'
+        all_items = entries
+
+        # Filter by status
+        if status_filter != 'all':
+            # Map legacy: good=GOOD, auto_updated=AUTO_UPDATED, manual_updated=MANUAL_UPDATED, failed=FAILED
+            status_map = {
+                'good': ['GOOD'],
+                'auto_updated': ['AUTO_UPDATED'],
+                'manual_updated': ['MANUAL_UPDATED'],
+                'auto_updated_legacy': ['OK'],
+                'failed': ['FAILED'],
+            }
+            allowed = status_map.get(status_filter, [status_filter.upper()])
+            filtered = [d for d in all_items if d.get('status') in allowed]
+        else:
+            filtered = all_items
 
     # Search by name/email/mobile
     if search:
@@ -253,15 +379,26 @@ def photos_list():
 
     total = len(filtered)
     # Counts for header (always total counts, not filtered)
-    counts = {
-        'total': len(all_items),
-        'good': sum(1 for d in all_items if d.get('status') == 'GOOD'),
-        'auto_updated': sum(1 for d in all_items if d.get('status') == 'AUTO_UPDATED'),
-        'manual_updated': sum(1 for d in all_items if d.get('status') == 'MANUAL_UPDATED'),
-        'failed': sum(1 for d in all_items if d.get('status') == 'FAILED'),
-        # Legacy fallback: count OK as auto_updated if present
-        'all': len(all_items),
-    }
+    if db_view:
+        # DB view uses its own statuses: GOOD=done, PENDING, REJECTED
+        counts = {
+            'total': len(all_items),
+            'good': sum(1 for d in all_items if d.get('status') == 'GOOD'),
+            'auto_updated': sum(1 for d in all_items if d.get('status') == 'PENDING'),
+            'manual_updated': 0,
+            'failed': sum(1 for d in all_items if d.get('status') == 'REJECTED'),
+            'all': len(all_items),
+        }
+    else:
+        counts = {
+            'total': len(all_items),
+            'good': sum(1 for d in all_items if d.get('status') == 'GOOD'),
+            'auto_updated': sum(1 for d in all_items if d.get('status') == 'AUTO_UPDATED'),
+            'manual_updated': sum(1 for d in all_items if d.get('status') == 'MANUAL_UPDATED'),
+            'failed': sum(1 for d in all_items if d.get('status') == 'FAILED'),
+            # Legacy fallback: count OK as auto_updated if present
+            'all': len(all_items),
+        }
     # Also include sub counts for failed breakdown
     counts['no_face'] = sum(1 for d in all_items if d.get('detail') == 'NO_FACE')
     counts['multiple'] = sum(1 for d in all_items if d.get('detail') == 'MULTIPLE_FACES')
@@ -273,7 +410,8 @@ def photos_list():
     total_pages = (total + per_page - 1) // per_page if total > 0 else 1
 
     return render_template('photos.html', items=page_items, counts=counts, status_filter=status_filter,
-                           page=page, per_page=per_page, total=total, total_pages=total_pages, search=search)
+                           page=page, per_page=per_page, total=total, total_pages=total_pages, search=search,
+                           db_view=db_view, db_view_label=DB_VIEW_LABELS.get(db_view, ''), db_stats=db_stats)
 
 @photos_bp.route('/image/<path:filename>')
 def serve_image(filename):
@@ -542,6 +680,59 @@ def upload_original(delegate_id):
         return jsonify({'success': True, 'original_url': url_for('photos.serve_original_image', delegate_id=delegate_id)})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@photos_bp.route('/update_status/<int:delegate_id>', methods=['POST'])
+def update_photo_status(delegate_id):
+    """Update delegate's photo verification status (profile_photo_status: 0=pending, 1=rejected, 2=done).
+    Scoped to THIS browser's selected conference schema. Also syncs in-memory entry.
+    """
+    conf_schema, _ck = _sel()
+    if not conf_schema:
+        return jsonify({'error': 'No conference selected'}), 400
+    payload = request.get_json(silent=True) or {}
+    # Accept form-encoded too (fallback)
+    raw = payload.get('status', request.form.get('status', None))
+    try:
+        new_status = int(raw)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Invalid status. Use 0 (pending), 1 (rejected) or 2 (done).'}), 400
+    if new_status not in (0, 1, 2):
+        return jsonify({'error': 'Invalid status. Use 0 (pending), 1 (rejected) or 2 (done).'}), 400
+    try:
+        from db.database import get_connection
+        conn = get_connection(database=conf_schema)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE delegates SET profile_photo_status=%s WHERE delegate_id=%s",
+                    (new_status, delegate_id))
+                if cur.rowcount == 0:
+                    conn.rollback()
+                    return jsonify({'error': f'Delegate {delegate_id} not found'}), 404
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    # Sync in-memory entry so processed view reflects change without restart
+    try:
+        entry = conf_state.get_entry(conf_schema, delegate_id)
+        if entry is not None:
+            rec = entry.get('record') or {}
+            rec['profile_photo_status'] = new_status
+            # Keep display status/detail in sync for DB-backed views
+            if new_status == 2:
+                entry['status'] = 'GOOD'
+                entry['detail'] = 'verified (status 2)'
+            elif new_status == 1:
+                entry['status'] = 'REJECTED'
+                entry['detail'] = 'rejected (status 1)'
+    except Exception:
+        pass
+    labels = {0: 'verification pending', 1: 'rejected', 2: 'verification done'}
+    return jsonify({'success': True, 'delegate_id': delegate_id,
+                    'profile_photo_status': new_status,
+                    'label': labels.get(new_status, '')})
 
 @photos_bp.route('/data')
 def photos_data():
