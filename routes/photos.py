@@ -270,6 +270,30 @@ def _db_view_entries(conf_schema, conf_key, view):
             orig_url = build_photo_url(rec.get('del_img_path'), rec.get('del_img_filename'))
         except Exception:
             orig_url = None
+        preview_file = _find_preview_for(did, conf_key)
+        original_file = _find_original(did, conf_key)
+        # Overlay in-memory crop state so a freshly cropped photo shows the
+        # S3 checkbox in DB views (?view=registered etc.). DB views derive
+        # status from profile_photo_status only (PENDING), so without this
+        # the {% if status in (AUTO/MANUAL) %} S3 box never appears even
+        # though a 354x472 preview exists on disk.
+        try:
+            mem = conf_state.get_entry(conf_schema, did) if did else None
+            if flag != 2 and preview_file and status in ('PENDING', 'REJECTED', 'NO_PHOTO'):
+                mem_status = (mem or {}).get('status') if mem else None
+                if mem_status in ('AUTO_UPDATED', 'MANUAL_UPDATED'):
+                    mem_pv = (mem or {}).get('preview_path')
+                    if mem_pv and os.path.exists(mem_pv):
+                        preview_file = mem_pv
+                    status = mem_status
+                    detail = (mem or {}).get('detail') or 'cropped to 354x472'
+                else:
+                    # Restart-safe fallback: preview exists on disk but no
+                    # in-memory entry (e.g. server restarted). Treat as
+                    # croppped so S3 upload is offered.
+                    status, detail = 'AUTO_UPDATED', 'cropped to 354x472 (from disk)'
+        except Exception:
+            pass
         s3_status, s3_key, s3_url = 'PENDING', None, None
         try:
             if _is_app_uploaded_row(rec, conf_key):
@@ -281,8 +305,8 @@ def _db_view_entries(conf_schema, conf_key, view):
             pass
         items.append({
             'record': rec,
-            'preview_path': _find_preview_for(did, conf_key),
-            'original_path': _find_original(did, conf_key),
+            'preview_path': preview_file,
+            'original_path': original_file,
             'original_url': orig_url,
             'status': status,
             'detail': detail,
@@ -336,9 +360,13 @@ def photos_list():
 
     if db_view:
         # DB-backed view for dashboard overview cards: always matches DB counts.
-        # No disk-restore here: leftover preview/good files from older runs
-        # would otherwise fabricate AUTO_UPDATED/GOOD entries (and counts)
-        # even though Start Processing never ran in this session.
+        # Still warm the in-memory store from disk so the S3 upload worker
+        # (which looks up entries via conf_state.get_entry) can find freshly
+        # cropped previews even when this DB view is opened first.
+        try:
+            _ensure_photos_loaded(conf_schema, conf_key)
+        except Exception:
+            pass
         all_items = _db_view_entries(conf_schema, conf_key, db_view)
         filtered = all_items
     else:
@@ -733,6 +761,132 @@ def update_photo_status(delegate_id):
     return jsonify({'success': True, 'delegate_id': delegate_id,
                     'profile_photo_status': new_status,
                     'label': labels.get(new_status, '')})
+
+@photos_bp.route('/remove/<int:delegate_id>', methods=['POST'])
+def remove_photo(delegate_id):
+    """Remove photo for one delegate: backup row to del_profile_logs, then
+    clear del_img_path/del_img_filename in DB (sets NO_PHOTO), delete local
+    preview/good/original files, drop in-memory entry. Scoped to selected conf_schema."""
+    conf_schema, conf_key = _sel()
+    if not conf_schema:
+        return jsonify({'success': False, 'error': 'No conference selected'}), 400
+    sel = session.get('selected_conference') or {}
+    conf_id = sel.get('conf_id')
+    # 1) DB: backup + clear in one txn
+    try:
+        from db.database import get_connection
+        from datetime import datetime
+        try:
+            from zoneinfo import ZoneInfo
+            _now = datetime.now(ZoneInfo("Asia/Kolkata")).replace(tzinfo=None)
+        except Exception:
+            from datetime import timedelta, timezone
+            _ist = timezone(timedelta(hours=5, minutes=30))
+            _now = datetime.now(_ist).replace(tzinfo=None)
+        conn = get_connection(database=conf_schema)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM delegates WHERE delegate_id=%s FOR UPDATE", (delegate_id,))
+                old_row = cur.fetchone()
+                if not old_row:
+                    conn.rollback()
+                    return jsonify({'success': False, 'error': f'Delegate {delegate_id} not found'}), 404
+                # Backup full old row into del_profile_logs (if table exists)
+                try:
+                    cur.execute("SHOW COLUMNS FROM `del_profile_logs`")
+                    log_cols = [r['Field'] for r in cur.fetchall()]
+                    insert_cols = [c for c in old_row.keys() if c in log_cols and c != 'log_id']
+                    vals = [old_row[c] for c in insert_cols]
+
+                    def _set(name, value):
+                        if name not in log_cols:
+                            return
+                        if name in insert_cols:
+                            vals[insert_cols.index(name)] = value
+                        else:
+                            insert_cols.append(name)
+                            vals.append(value)
+                    if conf_id is not None:
+                        try:
+                            _set('conf_id', int(conf_id))
+                        except (TypeError, ValueError):
+                            _set('conf_id', conf_id)
+                    _set('action', 'Manual remove in Photo crop app')
+                    _set('created_at', _now)
+                    _set('updated_at', _now)
+                    if insert_cols:
+                        ph = ', '.join(['%s'] * len(insert_cols))
+                        cl = ', '.join([f"`{c}`" for c in insert_cols])
+                        cur.execute(f"INSERT INTO del_profile_logs ({cl}) VALUES ({ph})", vals)
+                except Exception:
+                    pass  # don't block remove if logs table missing
+                # Clear photo columns (only existing cols)
+                cur.execute("SHOW COLUMNS FROM `delegates`")
+                del_cols = [r['Field'] for r in cur.fetchall()]
+                sets, params = [], []
+                if 'del_img_path' in del_cols:
+                    sets.append("del_img_path=%s")
+                    params.append('')
+                if 'del_img_filename' in del_cols:
+                    sets.append("del_img_filename=%s")
+                    params.append('')
+                if 'profile_photo_status' in del_cols:
+                    sets.append("profile_photo_status=%s")
+                    params.append(0)
+                if 'updated_at' in del_cols:
+                    sets.append("updated_at=NOW()")
+                if not sets:
+                    conn.rollback()
+                    return jsonify({'success': False, 'error': 'No photo columns to clear'}), 500
+                params.append(delegate_id)
+                cur.execute(f"UPDATE delegates SET {', '.join(sets)} WHERE delegate_id=%s", params)
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)[:300]}), 500
+    # 2) Delete local files (preview/good/original, conf dirs + legacy)
+    removed = []
+    try:
+        targets = []
+        pv = _find_preview_for(delegate_id, conf_key)
+        if pv:
+            targets.append(pv)
+        og = _find_original(delegate_id, conf_key)
+        if og:
+            targets.append(og)
+        # good-copy may differ from preview path
+        try:
+            _pv_dir, _gd_dir, _od_dir = conf_state.conf_dirs(conf_key)
+            for d, pat in ((_pv_dir, f"{delegate_id}."), (_gd_dir, f"{delegate_id}.")):
+                if d and os.path.exists(d):
+                    for fname in os.listdir(d):
+                        if fname.startswith(pat):
+                            p = os.path.join(d, fname)
+                            if p not in targets:
+                                targets.append(p)
+        except Exception:
+            pass
+        for p in targets:
+            try:
+                if p and os.path.isfile(p):
+                    os.remove(p)
+                    removed.append(os.path.basename(p))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # 3) Drop in-memory entry so processed view stops showing stale crop
+    try:
+        conf_state.processing_data.pop(conf_state.data_key(conf_schema, delegate_id), None)
+    except Exception:
+        pass
+    try:
+        conf_state.recount_processing_status(conf_schema)
+    except Exception:
+        pass
+    return jsonify({'success': True, 'delegate_id': delegate_id, 'removed_files': removed})
+
 
 @photos_bp.route('/data')
 def photos_data():

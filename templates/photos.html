@@ -312,6 +312,12 @@
         </button>
         <div id="s3-single-msg-{{ delegate_id }}" class="small mt-1" style="display:none;"></div>
         {% endif %}
+        {% if item.status != 'NO_PHOTO' %}
+        <button id="rm-{{ delegate_id }}" class="btn btn-sm btn-outline-danger w-100 mt-2" onclick='removePhoto({{ delegate_id }}, {{ (rec.delegate_no or delegate_id)|tojson }}, this)'>
+          <i class="bi bi-trash me-1"></i>Remove photo
+        </button>
+        <div id="rm-msg-{{ delegate_id }}" class="small mt-1" style="display:none;"></div>
+        {% endif %}
       </div>
     </div>
   </div>
@@ -821,9 +827,39 @@ function uploadSinglePhoto(delegateId, btn) {
   });
 }
 
+// ---- Remove photo (per photo box: backup to logs, clear DB, delete local files) ----
+function removePhoto(delegateId, delegateNo, btn) {
+  if (btn === undefined) { btn = delegateNo; delegateNo = delegateId; }
+  const label = (delegateNo !== undefined && delegateNo !== null && String(delegateNo).trim() !== '') ? delegateNo : delegateId;
+  if (!confirm(`Remove photo for delegate No. ${label}? DB photo will be cleared (backed up to logs) and local crop files deleted. This cannot be undone except via Logs > Restore.`)) return;
+  const msg = document.getElementById('rm-msg-' + delegateId);
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Removing...';
+  if (msg) { msg.style.display = 'block'; msg.innerHTML = '<span class="text-muted">Removing...</span>'; }
+  fetch(`/photos/remove/${delegateId}`, {method: 'POST'})
+  .then(r => r.json().then(d => ({ok: r.ok, data: d})))
+  .then(({ok, data}) => {
+    if (ok && data.success) {
+      btn.className = 'btn btn-sm btn-secondary w-100 mt-2';
+      btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Removed';
+      if (msg) msg.innerHTML = '<span class="text-success">Photo removed — backed up to logs. Reloading...</span>';
+      setTimeout(() => location.reload(), 1000);
+    } else {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-trash me-1"></i>Remove photo';
+      if (msg) msg.innerHTML = '<span class="text-danger">Failed: ' + ((data && data.error) || 'unknown') + '</span>';
+    }
+  })
+  .catch(err => {
+    console.error(err);
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-trash me-1"></i>Remove photo';
+    if (msg) msg.innerHTML = '<span class="text-danger">Network error</span>';
+  });
+}
+
 // ---- Per-delegate photo status dropdown + save tick ----
-function savePhotoStatus(delegateId, btn) {
-  const sel = document.getElementById('ps-select-' + delegateId);
+function savePhotoStatus(delegateId, btn) {  const sel = document.getElementById('ps-select-' + delegateId);
   const msg = document.getElementById('ps-msg-' + delegateId);
   const val = sel ? parseInt(sel.value, 10) : NaN;
   if (isNaN(val) || ![0,1,2].includes(val)) { alert('Pick Pending / Done / Rejected first'); return; }

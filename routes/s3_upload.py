@@ -47,13 +47,14 @@ def _ist_now_naive():
 
 
 def _ensure_trailing_slash(path):
-    """Ensure del_img_path values saved to DB end with a single '/'."""
+    """Normalize del_img_path for DB: NO trailing '/' (e.g. .../sposi26, not .../sposi26/).
+    Kept old name for compatibility; now strips trailing slash."""
     if not path:
         return path
     path = str(path).strip()
     if not path:
         return path
-    return path.rstrip('/') + '/'
+    return path.rstrip('/')
 
 
 def _match_search(entry, search):
@@ -107,14 +108,14 @@ def _backup_and_update(conf_schema, delegate_id, new_path, new_filename, conf_id
     Column lists are resolved at runtime so full delegates snapshot is stored
     without hardcoding schema.
 
-    - delegates.del_img_path is always saved with a trailing '/'.
+    - delegates.del_img_path is always saved WITHOUT trailing '/'.
     - del_profile_logs.conf_id is stamped from the selected conference
       (delegates only has conference_id, so it would otherwise stay NULL).
     - del_profile_logs.action is stamped as LOG_ACTION_BEFORE_CROP.
     - del_profile_logs.created_at/updated_at are stamped with IST time
       instead of relying on DB server timezone.
     """
-    # 1) delegates.del_img_path must end with '/'
+    # 1) delegates.del_img_path stored without trailing '/'
     new_path = _ensure_trailing_slash(new_path)
     conn = get_connection(database=conf_schema)
     try:
@@ -202,6 +203,70 @@ def _upload_one(conf_schema, did, conf_key, force=False, csv_w=None, logger=None
     FAILED. Failed items keep their crop status.
     """
     entry = conf_state.get_entry(conf_schema, did)
+    if not entry:
+        # DB views (?view=registered) can offer S3 upload for a cropped
+        # preview even when the in-memory store is empty (e.g. server
+        # restarted after cropping). Rebuild a minimal entry from disk + DB
+        # so the upload doesn't just SKIP with "photo not loaded".
+        try:
+            from db.database import get_connection as _get_conn
+            from services.photo_service import build_photo_url as _build_url
+            preview_dir, good_dir, original_dir = conf_state.conf_dirs(conf_key)
+            legacy_pv, legacy_gd, legacy_orig = (
+                os.path.join(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'storage')), 'preview'),
+                os.path.join(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'storage')), 'good'),
+                os.path.join(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'storage')), 'original'),
+            )
+            found_pv, found_orig, found_url, rec = None, None, None, None
+            for d in (preview_dir, good_dir, legacy_pv, legacy_gd):
+                if d and os.path.exists(d):
+                    for fname in os.listdir(d):
+                        if fname.startswith(f"{did}.") and fname.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
+                            found_pv = os.path.join(d, fname)
+                            break
+                if found_pv:
+                    break
+            for d in (original_dir, legacy_orig):
+                if d and os.path.exists(d):
+                    for fname in os.listdir(d):
+                        if fname.startswith(f"{did}_original"):
+                            found_orig = os.path.join(d, fname)
+                            break
+                if found_orig:
+                    break
+            try:
+                _conn = _get_conn(database=conf_schema)
+                try:
+                    with _conn.cursor() as _cur:
+                        _cur.execute("SELECT delegate_id, delegate_no, full_name, email, mobile, del_img_path, del_img_filename, profile_photo_status FROM delegates WHERE delegate_id=%s", (did,))
+                        rec = _cur.fetchone()
+                finally:
+                    _conn.close()
+            except Exception:
+                rec = None
+            if not rec:
+                rec = {'delegate_id': did, 'full_name': f'Delegate {did}'}
+            try:
+                found_url = _build_url(rec.get('del_img_path'), rec.get('del_img_filename'))
+            except Exception:
+                found_url = None
+            if found_pv:
+                entry = conf_state.set_entry(conf_schema, did, {
+                    'record': rec,
+                    'preview_path': found_pv,
+                    'original_path': found_orig,
+                    'original_url': found_url,
+                    'status': 'AUTO_UPDATED',
+                    'detail': 'cropped to 354x472 (from disk)',
+                    'bbox': None,
+                    's3_status': 'PENDING',
+                    's3_key': None,
+                    's3_url': None,
+                    's3_error': '',
+                    'uploaded_at': None,
+                })
+        except Exception:
+            entry = None
     if not entry:
         return 'SKIPPED', 'photo not loaded'
     # AUTO_UPDATED (auto crop) and MANUAL_UPDATED (manual crop) are eligible.

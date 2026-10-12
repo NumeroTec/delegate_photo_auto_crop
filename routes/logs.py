@@ -31,13 +31,13 @@ def _ist_now_naive():
 
 
 def _ensure_trailing_slash(path):
-    """Ensure del_img_path values saved to DB end with a single '/'."""
+    """Normalize del_img_path for DB: NO trailing '/'."""
     if not path:
         return path
     path = str(path).strip()
     if not path:
         return path
-    return path.rstrip('/') + '/'
+    return path.rstrip('/')
 
 
 def _selected():
@@ -221,7 +221,7 @@ def restore_log(log_id):
                             vals)
 
             # 2) Restore delegates photo to log values
-            # (del_img_path saved with trailing '/')
+            # (del_img_path saved without trailing '/')
             cur.execute("SHOW COLUMNS FROM delegates")
             del_cols = [r['Field'] for r in cur.fetchall()]
             sets, params = [], []

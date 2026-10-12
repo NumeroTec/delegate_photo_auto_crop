@@ -39,7 +39,7 @@ def _is_app_uploaded(record, conf_key=None):
     """True ONLY if this DB row is a photo uploaded by THIS app (not a raw S3 original).
 
     App uploads always set:
-      del_img_path == s3_base_path(conf_key)  (https://<bucket>.s3.<region>.amazonaws.com/<prefix>/<conf_key>/)
+      del_img_path == s3_base_path(conf_key)  (https://<bucket>.s3.<region>.amazonaws.com/<prefix>/<conf_key> — no trailing '/')
       del_img_filename == "<delegate_id>-<Name>-<Ymd>-<His>.jpg" (build_s3_key pattern)
     A registration-form S3 original (different path/filename) must return False
     so it goes through the normal download -> is_passport -> crop pipeline
