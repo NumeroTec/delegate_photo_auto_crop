@@ -331,6 +331,63 @@ def _find_original(delegate_id, conf_key):
     return None
 
 
+def _db_original_url(conf_schema, delegate_id):
+    """Build the remote original URL straight from the delegates table.
+
+    Used as a fallback when there is no in-memory entry / local cache
+    (e.g. ?view=registered opened before Start Processing ever ran).
+    Returns None when the row has no photo.
+    """
+    if not conf_schema or not delegate_id:
+        return None
+    try:
+        from db.database import get_connection
+        from services.photo_service import build_photo_url
+        conn = get_connection(database=conf_schema)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT del_img_path, del_img_filename FROM delegates WHERE delegate_id=%s",
+                    (delegate_id,))
+                row = cur.fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return None
+        return build_photo_url(row.get('del_img_path'), row.get('del_img_filename'))
+    except Exception:
+        return None
+
+
+def _download_and_cache_original(url, delegate_id, conf_key, entry=None):
+    """Download remote original to this conference's ORIGINAL_DIR and serve it.
+
+    Returns a Flask response (send_from_directory) on success, else None.
+    """
+    if not url:
+        return None
+    try:
+        import requests
+        resp = requests.get(url, timeout=15)
+        if not resp.ok or not resp.content:
+            return None
+        ext = os.path.splitext(url.split('?')[0])[1] or '.jpg'
+        if ext.lower() not in ['.jpg', '.jpeg', '.png', '.webp']:
+            ext = '.jpg'
+        _pv, _gd, original_dir = conf_state.conf_dirs(conf_key)
+        os.makedirs(original_dir, exist_ok=True)
+        save_path = os.path.join(original_dir, f"{delegate_id}_original{ext}")
+        with open(save_path, 'wb') as f:
+            f.write(resp.content)
+        if entry is not None:
+            entry['original_path'] = save_path
+            if not entry.get('original_url'):
+                entry['original_url'] = url
+        return send_from_directory(original_dir, os.path.basename(save_path))
+    except Exception:
+        return None
+
+
 @photos_bp.route('/')
 def photos_list():
     """View all photos with name and photo status: good, auto_updated, manual_updated, failed with count.
@@ -460,45 +517,35 @@ def serve_original_image(delegate_id):
     found = _find_original(delegate_id, conf_key)
     if found:
         return send_from_directory(os.path.dirname(found), os.path.basename(found))
-    # Not cached – proxy download remote original_url if available
+    # Not cached – proxy download remote original. Resolve the URL from the
+    # in-memory entry first, then straight from the DB (DB views such as
+    # ?view=registered have no entry/cache before Start Processing runs).
     data = conf_state.get_entry(conf_schema, delegate_id) if conf_schema else None
-    if data and data.get('original_url'):
-        try:
-            import requests
-            url = data['original_url']
-            resp = requests.get(url, timeout=10)
-            if resp.ok:
-                ext = os.path.splitext(url)[1] or '.jpg'
-                if '?' in ext:
-                    ext = ext.split('?')[0]
-                if ext.lower() not in ['.jpg','.jpeg','.png','.webp']:
-                    ext = '.jpg'
-                _pv, _gd, original_dir = conf_state.conf_dirs(conf_key)
-                save_path = os.path.join(original_dir, f"{delegate_id}_original{ext}")
-                with open(save_path, 'wb') as f:
-                    f.write(resp.content)
-                # Update keyed entry original_path
-                data['original_path'] = save_path
-                return send_from_directory(original_dir, os.path.basename(save_path))
-        except Exception:
-            pass
-        # If proxy fails, redirect to remote for debug (cropper will load cross-origin – may taint)
-        # Still try to serve preview as last resort for visibility
-        preview_file = os.path.basename(data.get('preview_path') or '')
-        if preview_file:
-            found_preview = _find_file(preview_file, conf_key)
-            if found_preview:
-                return send_from_directory(os.path.dirname(found_preview), os.path.basename(found_preview))
-        return jsonify({'redirect': data['original_url']}), 302
-    # Legacy fallback: try preview/good if no entry
-    if data is None:
-        preview_file = None
-        for d in [LEGACY_PREVIEW, LEGACY_GOOD]:
-            if not os.path.exists(d):
-                continue
-            for fname in os.listdir(d):
-                if fname.startswith(str(delegate_id) + '.'):
-                    return send_from_directory(d, fname)
+    url = (data or {}).get('original_url') if data else None
+    if not url:
+        url = _db_original_url(conf_schema, delegate_id)
+        if data is not None and url and not data.get('original_url'):
+            data['original_url'] = url
+    if url:
+        served = _download_and_cache_original(url, delegate_id, conf_key, entry=data)
+        if served is not None:
+            return served
+        # If proxy download fails, serve the cropped preview as a last
+        # resort for visibility (better than a broken popup).
+        if data:
+            preview_file = os.path.basename(data.get('preview_path') or '')
+            if preview_file:
+                found_preview = _find_file(preview_file, conf_key)
+                if found_preview:
+                    return send_from_directory(os.path.dirname(found_preview), os.path.basename(found_preview))
+        return jsonify({'redirect': url}), 302
+    # Legacy fallback: try preview/good if no URL at all
+    for d in [LEGACY_PREVIEW, LEGACY_GOOD]:
+        if not os.path.exists(d):
+            continue
+        for fname in os.listdir(d):
+            if fname.startswith(str(delegate_id) + '.'):
+                return send_from_directory(d, fname)
     abort(404)
 
 @photos_bp.route('/original/<int:delegate_id>')
@@ -528,9 +575,11 @@ def photo_info(delegate_id):
                             break
                 if found_preview:
                     break
-        if not found_preview and not _find_original(delegate_id, conf_key):
-            abort(404)
-        # Build minimal record from THIS conference's DB
+        # Build minimal record from THIS conference's DB first: DB views
+        # (?view=registered etc.) list rows that were never processed, so
+        # there may be no local preview/original file yet. As long as the
+        # DB row has a photo, the crop popup must still open — the
+        # /original_image proxy downloads + caches it on demand.
         rec = None
         try:
             from db.database import get_connection
@@ -554,6 +603,8 @@ def photo_info(delegate_id):
             orig_url = build_photo_url(rec.get('del_img_path'), rec.get('del_img_filename'))
         except Exception:
             orig_url = None
+        if not found_preview and not _find_original(delegate_id, conf_key) and not orig_url:
+            abort(404)
         data = {
             'record': rec,
             'preview_path': found_preview,
@@ -581,6 +632,9 @@ def photo_info(delegate_id):
         'full_name': rec.get('full_name',''),
         'original_url': original_url,
         'has_original_file': has_original,
+        # True when the delegates row actually has a remote photo (lets the
+        # popup show "use Upload New" instead of a doomed proxy load).
+        'has_remote_photo': bool(data.get('original_url')),
         'cropped_url': cropped_url,
         'status': data.get('status'),
         'detail': data.get('detail'),

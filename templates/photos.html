@@ -437,7 +437,12 @@ let currentSource = 'original';
 let originalUrl = null;
 let croppedUrl = null;
 let uploadedDataUrl = null;
+let hasOriginalFile = false;
+let hasRemotePhoto = false;
+let infoLoaded = false;
+let infoFailed = false;
 
+let modalRequestId = 0;
 let pendingImageUrl = null;
 let pendingSource = null;
 function _activateTab(src) {
@@ -450,12 +455,35 @@ function _activateTab(src) {
   }
   currentSource = src;
 }
+function _showPlaceholder(html) {
+  destroyCropper();
+  const img = document.getElementById('cropperImage');
+  img.removeAttribute('src');
+  img.style.display = 'none';
+  const placeholder = document.getElementById('cropperPlaceholder');
+  placeholder.style.display = 'block';
+  placeholder.innerHTML = html;
+}
 function openCropModal(delegateId, fullName, src) {
+  const req = ++modalRequestId;
   currentDelegateId = delegateId;
+  // Clear the previously opened photo SYNCHRONOUSLY: tab clicks before the
+  // info fetch below resolves must never load the old delegate's URLs.
+  originalUrl = null;
+  croppedUrl = null;
   uploadedDataUrl = null;
+  hasOriginalFile = false;
+  hasRemotePhoto = false;
+  infoLoaded = false;
+  infoFailed = false;
   pendingImageUrl = null;
   // NO_PHOTO cards pass "upload" so the modal opens on the Upload New tab.
-  pendingSource = (src === 'upload' || src === 'cropped' || src === 'original') ? src : null;
+  const want = (src === 'upload' || src === 'cropped' || src === 'original') ? src : 'original';
+  pendingSource = want;
+  currentSource = want;
+  _showPlaceholder('<div class="spinner-border spinner-border-sm text-primary"></div><br>Loading photo...');
+  document.getElementById('cropStatus').textContent = 'Loading...';
+  _activateTab(want);
   document.getElementById('cropModalName').textContent = fullName || '';
   document.getElementById('cropModalId').textContent = '(ID ' + delegateId + ')';
   document.getElementById('uploadInput').value = '';
@@ -467,13 +495,21 @@ function openCropModal(delegateId, fullName, src) {
   fetch(`/photos/info/${delegateId}`)
     .then(r => r.json())
     .then(data => {
+      // Stale response (user opened another photo meanwhile) — ignore it.
+      if (req !== modalRequestId || currentDelegateId !== delegateId) return;
       originalUrl = data.original_url;
       croppedUrl = data.cropped_url;
-      const want = pendingSource || 'original';
+      hasOriginalFile = !!data.has_original_file;
+      hasRemotePhoto = !!data.has_remote_photo;
+      infoLoaded = true;
+      infoFailed = false;
+      // Respect the tab the user is actually on now (they may have clicked
+      // another tab while loading).
+      const target = pendingSource || currentSource || 'original';
       pendingSource = null;
       // Activate the requested tab (without triggering switchSource early)
-      _activateTab(want);
-      if (want === 'upload') {
+      _activateTab(target);
+      if (target === 'upload') {
         pendingImageUrl = null;
         // If modal already fully shown, show upload placeholder now;
         // otherwise the shown-event handler below will do it.
@@ -484,7 +520,17 @@ function openCropModal(delegateId, fullName, src) {
         }
         return;
       }
-      pendingImageUrl = (want === 'cropped') ? croppedUrl : originalUrl;
+      if (target === 'cropped' && !croppedUrl) {
+        _showPlaceholder('<i class="bi bi-aspect-ratio" style="font-size:2rem;"></i><br>No cropped image yet — use Original or Upload New');
+        document.getElementById('cropStatus').textContent = '';
+        return;
+      }
+      if (target === 'original' && !hasOriginalFile && !hasRemotePhoto) {
+        _showPlaceholder('<i class="bi bi-image" style="font-size:2rem;"></i><br>No original photo on file — use the Upload New tab');
+        document.getElementById('cropStatus').textContent = '';
+        return;
+      }
+      pendingImageUrl = (target === 'cropped') ? croppedUrl : originalUrl;
       // If modal already fully shown, load immediately; otherwise wait for shown event
       if (modalEl.classList.contains('show')) {
         const url = pendingImageUrl; pendingImageUrl = null;
@@ -493,13 +539,14 @@ function openCropModal(delegateId, fullName, src) {
     })
     .catch(e => {
       console.error(e);
-      if (pendingSource) {
-        // Keep the requested tab active even when info fetch fails.
-        try { _activateTab(pendingSource); } catch(_e) {}
-        pendingSource = null;
-      }
+      // Stale failure — another photo was opened meanwhile, ignore it.
+      if (req !== modalRequestId || currentDelegateId !== delegateId) return;
+      infoLoaded = false;
+      infoFailed = true;
       pendingImageUrl = null;
-      loadImageForCropper(null);
+      pendingSource = currentSource;
+      _showPlaceholder('<span class="text-danger">Failed to load photo info</span><br><small>Close and retry</small>');
+      document.getElementById('cropStatus').textContent = '';
     });
 }
 
@@ -509,12 +556,37 @@ function switchSource(src) {
   // If modal not yet fully visible, defer load to shown event to avoid small preview
   const isShown = modalEl.classList.contains('show');
   if (!isShown) {
-    if (src === 'original') pendingImageUrl = originalUrl;
-    else if (src === 'cropped') pendingImageUrl = croppedUrl;
-    else if (src === 'upload' && uploadedDataUrl) pendingImageUrl = uploadedDataUrl;
+    pendingSource = src;
     return;
   }
+  if (src === 'upload') {
+    pendingSource = null;
+    if (uploadedDataUrl) {
+      loadImageForCropper(uploadedDataUrl);
+    } else {
+      // show placeholder until upload
+      _showPlaceholder('<i class="bi bi-cloud-upload" style="font-size:2rem;"></i><br>Choose a file above');
+    }
+    return;
+  }
+  // Original / cropped need this photo's info first — never fall back to
+  // the previously opened photo's URL while loading.
+  if (!infoLoaded) {
+    if (infoFailed) {
+      pendingSource = null;
+      _showPlaceholder('<span class="text-danger">Failed to load photo info</span><br><small>Close and retry</small>');
+      return;
+    }
+    pendingSource = src;
+    _showPlaceholder('<div class="spinner-border spinner-border-sm text-primary"></div><br>Loading photo...');
+    return;
+  }
+  pendingSource = null;
   if (src === 'original') {
+    if (!hasOriginalFile && !hasRemotePhoto) {
+      _showPlaceholder('<i class="bi bi-image" style="font-size:2rem;"></i><br>No original photo on file — use the Upload New tab');
+      return;
+    }
     loadImageForCropper(originalUrl);
   } else if (src === 'cropped') {
     if (!croppedUrl) {
@@ -522,43 +594,40 @@ function switchSource(src) {
       return;
     }
     loadImageForCropper(croppedUrl);
-  } else if (src === 'upload') {
-    if (uploadedDataUrl) {
-      loadImageForCropper(uploadedDataUrl);
-    } else {
-      // show placeholder until upload
-      destroyCropper();
-      document.getElementById('cropperImage').style.display = 'none';
-      document.getElementById('cropperPlaceholder').style.display = 'block';
-      document.getElementById('cropperPlaceholder').innerHTML = '<i class="bi bi-cloud-upload" style="font-size:2rem;"></i><br>Choose a file above';
-    }
   }
 }
 
 function loadImageForCropper(url) {
   if (!url) {
-    destroyCropper();
-    document.getElementById('cropperImage').style.display = 'none';
-    document.getElementById('cropperPlaceholder').style.display = 'block';
+    _showPlaceholder('<i class="bi bi-image" style="font-size:2rem;"></i><br>No photo available');
     return;
   }
+  const req = modalRequestId;
   const img = document.getElementById('cropperImage');
   const placeholder = document.getElementById('cropperPlaceholder');
   img.style.display = 'block';
   placeholder.style.display = 'none';
   // Attach handlers BEFORE setting src: cached images can fire load
   // synchronously and the handler would be missed (dead cropper popup).
+  // The request token drops late events from a previously opened photo.
   img.onload = () => {
+    if (req !== modalRequestId) return;
     initCropper();
   };
   img.onerror = () => {
+    if (req !== modalRequestId) return;
     destroyCropper();
     placeholder.style.display = 'block';
     placeholder.innerHTML = '<span class="text-danger">Failed to load image</span><br><small>' + url + '</small>';
   };
-  // bust cache (clear first so setting src always triggers a fresh load)
-  const sep = url.includes('?') ? '&' : '?';
+  // bust cache (clear first so setting src always triggers a fresh load).
+  // data: URLs (fresh uploads) must be used as-is — appending ?cb= corrupts them.
   img.removeAttribute('src');
+  if (url.startsWith('data:')) {
+    img.src = url;
+    return;
+  }
+  const sep = url.includes('?') ? '&' : '?';
   img.src = url + sep + 'cb=' + Date.now();
 }
 
@@ -674,12 +743,31 @@ document.getElementById('cropModal').addEventListener('shown.bs.modal', function
   }
 });
 
-// cleanup on modal hide
+// cleanup on modal hide — full reset so the next open never flashes
+// the previous delegate's photo, tab, or upload.
 document.getElementById('cropModal').addEventListener('hidden.bs.modal', function(){
+  modalRequestId++;  // invalidate any in-flight info fetch / image load
   destroyCropper();
-  document.getElementById('cropperImage').removeAttribute('src');
+  const img = document.getElementById('cropperImage');
+  img.removeAttribute('src');
+  img.style.display = 'none';
+  const placeholder = document.getElementById('cropperPlaceholder');
+  placeholder.style.display = 'block';
+  placeholder.innerHTML = '<i class="bi bi-image" style="font-size:2rem;"></i><br>Select a source above';
+  document.getElementById('cropStatus').textContent = '';
+  document.getElementById('uploadInput').value = '';
+  currentDelegateId = null;
+  currentSource = 'original';
+  originalUrl = null;
+  croppedUrl = null;
+  uploadedDataUrl = null;
+  hasOriginalFile = false;
+  hasRemotePhoto = false;
+  infoLoaded = false;
+  infoFailed = false;
   pendingImageUrl = null;
   pendingSource = null;
+  _activateTab('original');
 });
 
 // ---- S3 bulk upload (checked boxes only) ----

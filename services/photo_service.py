@@ -13,20 +13,31 @@ os.makedirs(ORIGINAL_DIR, exist_ok=True)
 def build_photo_url(del_img_path, del_img_filename):
     """Construct full URL for the original photo.
     Handles both absolute S3 URLs and relative paths.
+
+    Always guarantees exactly one '/' between the base path and the
+    filename, regardless of whether the stored path has a trailing '/'
+    (old rows were saved WITH it, new rows WITHOUT it).
     """
     if not del_img_path or not del_img_filename:
         return None
-    del_img_path = del_img_path.strip()
-    del_img_filename = del_img_filename.strip()
+    del_img_path = str(del_img_path).strip()
+    del_img_filename = str(del_img_filename).strip()
+    if not del_img_path or not del_img_filename:
+        return None
+    # Filename column should never contain a path, but guard against a
+    # stored value like "delegate_photo/x.jpg" duplicating the base path.
+    # Keep only the final component in that case.
+    if '/' in del_img_filename and not del_img_filename.startswith(('http://', 'https://')):
+        del_img_filename = del_img_filename.strip().split('/')[-1].strip()
     # If del_img_path is already a full URL (e.g., https://...s3...), just join with filename
     if del_img_path.startswith('http://') or del_img_path.startswith('https://'):
-        # Ensure single slash between path and filename
+        # Ensure exactly one slash between path and filename
         return del_img_path.rstrip('/') + '/' + del_img_filename.lstrip('/')
     # Otherwise use PHOTO_BASE_URL as base
-    base = Config.PHOTO_BASE_URL.rstrip('/') + '/'
-    path = del_img_path.lstrip('/')
+    base = (Config.PHOTO_BASE_URL or '').strip().rstrip('/') + '/'
+    path = del_img_path.lstrip('/').rstrip('/')
     filename = del_img_filename.lstrip('/')
-    full_path = os.path.join(path, filename)
+    full_path = path + '/' + filename if path else filename
     return urljoin(base, full_path)
 
 def download_image(url, delegate_id, conf_key=None):
