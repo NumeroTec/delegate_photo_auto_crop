@@ -154,10 +154,10 @@ def _ensure_photos_loaded(conf_schema, conf_key):
         return
     preview_dir, good_dir, original_dir = conf_state.conf_dirs(conf_key)
     # Conference folders first (authoritative for this conference)
-    _scan_dir_for_entries(preview_dir, 'AUTO_UPDATED', conf_schema, 'cropped to 354x472', original_dir, conf_key)
+    _scan_dir_for_entries(preview_dir, 'AUTO_UPDATED', conf_schema, 'cropped to 354x455', original_dir, conf_key)
     _scan_dir_for_entries(good_dir, 'GOOD', conf_schema, 'restored from disk', original_dir, conf_key)
     # Legacy flat folders as fallback for pre-isolation files
-    _scan_dir_for_entries(LEGACY_PREVIEW, 'AUTO_UPDATED', conf_schema, 'cropped to 354x472', LEGACY_ORIGINAL, conf_key)
+    _scan_dir_for_entries(LEGACY_PREVIEW, 'AUTO_UPDATED', conf_schema, 'cropped to 354x455', LEGACY_ORIGINAL, conf_key)
     _scan_dir_for_entries(LEGACY_GOOD, 'GOOD', conf_schema, 'restored from disk', LEGACY_ORIGINAL, conf_key)
     # Legacy originals: attach to entries missing original_path
     for legacy_orig in (LEGACY_ORIGINAL,):
@@ -276,7 +276,7 @@ def _db_view_entries(conf_schema, conf_key, view):
         # S3 checkbox in DB views (?view=registered etc.). DB views derive
         # status from profile_photo_status only (PENDING), so without this
         # the {% if status in (AUTO/MANUAL) %} S3 box never appears even
-        # though a 354x472 preview exists on disk.
+        # though a 354x455 preview exists on disk.
         try:
             mem = conf_state.get_entry(conf_schema, did) if did else None
             if flag != 2 and preview_file and status in ('PENDING', 'REJECTED', 'NO_PHOTO'):
@@ -286,12 +286,12 @@ def _db_view_entries(conf_schema, conf_key, view):
                     if mem_pv and os.path.exists(mem_pv):
                         preview_file = mem_pv
                     status = mem_status
-                    detail = (mem or {}).get('detail') or 'cropped to 354x472'
+                    detail = (mem or {}).get('detail') or 'cropped to 354x455'
                 else:
                     # Restart-safe fallback: preview exists on disk but no
                     # in-memory entry (e.g. server restarted). Treat as
                     # croppped so S3 upload is offered.
-                    status, detail = 'AUTO_UPDATED', 'cropped to 354x472 (from disk)'
+                    status, detail = 'AUTO_UPDATED', 'cropped to 354x455 (from disk)'
         except Exception:
             pass
         s3_status, s3_key, s3_url = 'PENDING', None, None
@@ -430,9 +430,9 @@ def photos_list():
         _ensure_photos_loaded(conf_schema, conf_key)
         entries = conf_state.scoped_entries(conf_schema)
         # One-time migration: older manual crops were stored as AUTO_UPDATED
-        # with detail 'manual crop 354x472' — flip them to MANUAL_UPDATED.
+        # with detail 'manual crop 354x455' — flip them to MANUAL_UPDATED.
         for _d in entries:
-            if _d.get('status') == 'AUTO_UPDATED' and _d.get('detail') == 'manual crop 354x472':
+            if _d.get('status') == 'AUTO_UPDATED' and _d.get('detail') == 'manual crop 354x455':
                 _d['status'] = 'MANUAL_UPDATED'
         all_items = entries
 
@@ -643,7 +643,7 @@ def photo_info(delegate_id):
 
 @photos_bp.route('/manual_crop/<int:delegate_id>', methods=['POST'])
 def manual_crop(delegate_id):
-    """Receive manually cropped image (354x472) from frontend Cropper.js.
+    """Receive manually cropped image (354x455) from frontend Cropper.js.
     Expects multipart/form-data with 'cropped' file (blob) or JSON base64 'image'.
     Saves to THIS conference's preview folder and updates keyed entry status
     to MANUAL_UPDATED.
@@ -674,7 +674,7 @@ def manual_crop(delegate_id):
         if not image_data:
             return jsonify({'error': 'No image data received'}), 400
 
-        # Validate and convert to 354x472 JPEG
+        # Validate and convert to 354x455 JPEG
         from config import Config
         img = Image.open(BytesIO(image_data))
         # Handle rotation EXIF if any
@@ -685,7 +685,7 @@ def manual_crop(delegate_id):
             pass
         if img.mode != 'RGB':
             img = img.convert('RGB')
-        # Resize to exact 354x472 if not already
+        # Resize to exact 354x455 if not already
         out_w = Config.OUTPUT_WIDTH
         out_h = Config.OUTPUT_HEIGHT
         if img.size != (out_w, out_h):
@@ -709,7 +709,7 @@ def manual_crop(delegate_id):
         if data:
             data['preview_path'] = output_path
             data['status'] = 'MANUAL_UPDATED'
-            data['detail'] = 'manual crop 354x472'
+            data['detail'] = 'manual crop 354x455'
             # New crop needs re-upload even if previously uploaded
             data['s3_status'] = 'PENDING'
             data['s3_error'] = ''
@@ -721,7 +721,7 @@ def manual_crop(delegate_id):
                 'original_path': None,
                 'original_url': None,
                 'status': 'MANUAL_UPDATED',
-                'detail': 'manual crop 354x472',
+                'detail': 'manual crop 354x455',
                 'record': {'delegate_id': delegate_id, 'full_name': f'Delegate {delegate_id}'},
                 's3_status': 'PENDING',
                 's3_key': None,
@@ -733,7 +733,7 @@ def manual_crop(delegate_id):
         # Recount THIS conference's dashboard counters so Good/Auto/Manual/Failed stay accurate
         conf_state.recount_processing_status(conf_schema)
 
-        return jsonify({'success': True, 'preview_url': url_for('photos.serve_image', filename=f"{delegate_id}.jpg"), 'message': 'Manual crop saved 354x472'})
+        return jsonify({'success': True, 'preview_url': url_for('photos.serve_image', filename=f"{delegate_id}.jpg"), 'message': 'Manual crop saved 354x455'})
     except Exception as e:
         import traceback
         traceback.print_exc()

@@ -10,7 +10,7 @@ os.makedirs(PREVIEW_DIR, exist_ok=True)
 os.makedirs(GOOD_DIR, exist_ok=True)
 
 def is_passport_photo(image_path):
-    """Check if photo is already passport-like: exactly 354x472 and face centered with correct ratio.
+    """Check if photo is already passport-like: exactly 354x455 and face centered with correct ratio.
     Returns (is_good: bool, reason: str, bbox).
     Step 2: if already passport-like, skip crop and mark as good.
     """
@@ -197,7 +197,7 @@ def generate_passport_crop(original_path, bbox, delegate_id, conf_key=None):
     # --- Cover-fit crop (no white padding) ---
     # Previous white-canvas padding caused visible white bars for large faces
     # (e.g., Vivek Jain 412, Deepti 436, Sandeep 440) where desired crop
-    # 479x639 > 354x472. User requires image to always fill 354x472 without white.
+    # 479x639 > 354x455. User requires image to always fill 354x455 without white.
     # So we clamp crop to stay inside image. If desired crop is larger than
     # image, we scale to ensure crop fits (no white), accepting slightly larger
     # face than FACE_TARGET_RATIO but filling frame.

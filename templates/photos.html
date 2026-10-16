@@ -111,7 +111,7 @@
       <div class="card card-modern text-center py-3 {% if status_filter=='auto_updated' %}border-primary border-2{% endif %}">
         <div class="stat-icon bg-primary bg-opacity-10 text-primary mx-auto mb-2"><i class="bi bi-magic"></i></div>
         <div class="h4 fw-bold mb-0 text-primary">{{ counts.auto_updated }}</div>
-        <div class="small text-muted">Auto Updated <span class="text-muted">(cropped 354×472)</span></div>
+        <div class="small text-muted">Auto Updated <span class="text-muted">(cropped 354×455)</span></div>
         <span class="badge {% if status_filter=='auto_updated' %}bg-primary{% else %}bg-light text-primary border{% endif %} mt-1">auto_updated</span>
       </div>
     </a>
@@ -121,7 +121,7 @@
       <div class="card card-modern text-center py-3 {% if status_filter=='manual_updated' %}border-info border-2{% endif %}">
         <div class="stat-icon bg-info bg-opacity-10 text-info mx-auto mb-2"><i class="bi bi-scissors"></i></div>
         <div class="h4 fw-bold mb-0 text-info">{{ counts.manual_updated }}</div>
-        <div class="small text-muted">Manual Updated <span class="text-muted">(hand crop 354×472)</span></div>
+        <div class="small text-muted">Manual Updated <span class="text-muted">(hand crop 354×455)</span></div>
         <span class="badge {% if status_filter=='manual_updated' %}bg-info text-dark{% else %}bg-light text-info border{% endif %} mt-1">manual_updated</span>
       </div>
     </a>
@@ -209,7 +209,7 @@
     <div class="card card-modern h-100 overflow-hidden">
       {% if item.status == 'GOOD' %}
       <div class="d-flex bg-white flex-column align-items-center justify-content-center p-2" style="height: 190px;">
-        <small class="text-muted mb-1" style="font-size:0.7rem;">PASSPORT GOOD — ORIGINAL (354×472)</small>
+        <small class="text-muted mb-1" style="font-size:0.7rem;">PASSPORT GOOD — ORIGINAL (354×455)</small>
         {% if item.preview_path %}
           <img src="{{ url_for('photos.serve_image', filename=preview_file) }}" alt="good passport photo" class="img-fluid rounded border" style="max-height:155px; object-fit:contain; border-color:#198754 !important;">
         {% elif item.original_path %}
@@ -238,7 +238,7 @@
         </div>
         <div class="flex-fill bg-white d-flex flex-column align-items-center justify-content-center p-2" style="width:50%;">
           <small class="text-muted mb-1" style="font-size:0.7rem;">
-            {% if item.status=='GOOD' %}PASSPORT GOOD{% elif item.status=='MANUAL_UPDATED' %}MANUAL 354×472{% elif item.status=='AUTO_UPDATED' %}CROPPED 354×472{% elif item.status=='PENDING' %}PENDING VERIFICATION{% elif item.status=='REJECTED' %}REJECTED{% elif item.status=='NO_PHOTO' %}NO PHOTO{% else %}CROP FAILED{% endif %}
+            {% if item.status=='GOOD' %}PASSPORT GOOD{% elif item.status=='MANUAL_UPDATED' %}MANUAL 354×455{% elif item.status=='AUTO_UPDATED' %}CROPPED 354×455{% elif item.status=='PENDING' %}PENDING VERIFICATION{% elif item.status=='REJECTED' %}REJECTED{% elif item.status=='NO_PHOTO' %}NO PHOTO{% else %}CROP FAILED{% endif %}
           </small>
           {% if item.preview_path %}
             <img src="{{ url_for('photos.serve_image', filename=preview_file) }}" alt="cropped" class="img-fluid rounded border" style="max-height:150px; object-fit:contain; {% if item.status=='GOOD' %}border-color:#198754 !important;{% elif item.status=='FAILED' %}border-color:#dc3545 !important;{% endif %}">
@@ -354,7 +354,7 @@
   <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
     <div class="modal-content">
       <div class="modal-header">
-        <h5 class="modal-title"><i class="bi bi-crop me-2 text-primary"></i>Manual Crop <span class="text-muted" style="font-weight:400;">— <span id="cropModalName"></span> <small id="cropModalId" class="text-muted"></small></span> <span class="badge bg-light text-dark border ms-2" style="font-size:0.7rem;">354×472 px</span></h5>
+        <h5 class="modal-title"><i class="bi bi-crop me-2 text-primary"></i>Manual Crop <span class="text-muted" style="font-weight:400;">— <span id="cropModalName"></span> <small id="cropModalId" class="text-muted"></small></span> <span class="badge bg-light text-dark border ms-2" style="font-size:0.7rem;">{{ OUTPUT_WIDTH|default(354) }}×{{ OUTPUT_HEIGHT|default(455) }} px</span></h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body">
@@ -372,7 +372,7 @@
         </ul>
         <div class="tab-content mb-3">
           <div class="tab-pane fade show active" id="pane-original"> <small class="text-muted">Using original downloaded photo as source (served via the app, cached on first open).</small></div>
-          <div class="tab-pane fade" id="pane-cropped"><small class="text-muted">Using already cropped <code>354×472</code> image as source for re-crop.</small></div>
+          <div class="tab-pane fade" id="pane-cropped"><small class="text-muted">Using already cropped <code>{{ OUTPUT_WIDTH|default(354) }}×{{ OUTPUT_HEIGHT|default(455) }}</code> image as source for re-crop.</small></div>
           <div class="tab-pane fade" id="pane-upload">
             <input type="file" id="uploadInput" accept="image/*" class="form-control form-control-sm">
             <small class="text-muted">Choose a new image from your computer. It will be loaded into the cropper.</small>
@@ -398,19 +398,19 @@
                 <button class="btn btn-outline-secondary" onclick="zoomOut()"><i class="bi bi-zoom-out"></i></button>
                 <button class="btn btn-outline-secondary" onclick="resetCropper()">Reset</button>
               </div>
-              <small class="text-muted ms-auto"><i class="bi bi-info-circle me-1"></i>Drag to position, scroll to zoom, fixed <strong>0.75 (354×472)</strong> aspect</small>
+              <small class="text-muted ms-auto"><i class="bi bi-info-circle me-1"></i>Drag to position, scroll to zoom, fixed <strong>{{ OUTPUT_WIDTH|default(354) }}×{{ OUTPUT_HEIGHT|default(455) }}</strong> aspect</small>
             </div>
           </div>
           <div class="col-lg-4">
             <div class="card">
-              <div class="card-header py-2"><small class="fw-semibold"><i class="bi bi-eye me-1"></i>Live Preview – 354×472</small></div>
+              <div class="card-header py-2"><small class="fw-semibold"><i class="bi bi-eye me-1"></i>Live Preview – {{ OUTPUT_WIDTH|default(354) }}×{{ OUTPUT_HEIGHT|default(455) }}</small></div>
               <div class="card-body d-flex flex-column align-items-center">
                 <div id="livePreview" style="width:100%; max-width:320px; height:426px; overflow:hidden; border:1px solid #dee2e6; border-radius:8px; background:#f8f9fa;"></div>
                 <small class="text-muted mt-2" style="font-size:0.7rem;">Exact passport size after Save</small>
                 <div class="mt-3 w-100">
-                  <div class="d-flex justify-content-between small text-muted"><span>Width</span><strong>354 px</strong></div>
-                  <div class="d-flex justify-content-between small text-muted"><span>Height</span><strong>472 px</strong></div>
-                  <div class="d-flex justify-content-between small text-muted"><span>Aspect</span><strong>0.75</strong></div>
+                  <div class="d-flex justify-content-between small text-muted"><span>Width</span><strong>{{ OUTPUT_WIDTH|default(354) }} px</strong></div>
+                  <div class="d-flex justify-content-between small text-muted"><span>Height</span><strong>{{ OUTPUT_HEIGHT|default(455) }} px</strong></div>
+                  <div class="d-flex justify-content-between small text-muted"><span>Aspect</span><strong>0.78</strong></div>
                 </div>
                 <div id="cropStatus" class="small text-muted mt-2"></div>
               </div>
@@ -423,7 +423,7 @@
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-        <button type="button" class="btn btn-primary" id="saveCropBtn" onclick="saveCrop()"><i class="bi bi-check-lg me-1"></i>Save Crop (354×472)</button>
+        <button type="button" class="btn btn-primary" id="saveCropBtn" onclick="saveCrop()"><i class="bi bi-check-lg me-1"></i>Save Crop ({{ OUTPUT_WIDTH|default(354) }}×{{ OUTPUT_HEIGHT|default(455) }})</button>
       </div>
     </div>
   </div>
@@ -637,7 +637,7 @@ function initCropper() {
   // Ensure image is visible and container has dimensions before init
   // Cropper needs container size; modal must be shown
   cropper = new Cropper(image, {
-    aspectRatio: 354/472,
+    aspectRatio: {{ OUTPUT_WIDTH|default(354) }}/{{ OUTPUT_HEIGHT|default(455) }},
     viewMode: 1,
     autoCropArea: 0.85,
     movable: true,
@@ -681,14 +681,17 @@ document.getElementById('uploadInput').addEventListener('change', function(e){
 function saveCrop() {
   if (!cropper) { alert('No image loaded — wait for the photo to appear, then retry'); return; }
   const btn = document.getElementById('saveCropBtn');
-  const resetBtn = () => { btn.disabled=false; btn.innerHTML='<i class="bi bi-check-lg me-1"></i>Save Crop (354×472)'; };
+  const OUT_W = {{ OUTPUT_WIDTH|default(354) }};
+  const OUT_H = {{ OUTPUT_HEIGHT|default(455) }};
+  const saveLabel = `<i class="bi bi-check-lg me-1"></i>Save Crop (${OUT_W}×${OUT_H})`;
+  const resetBtn = () => { btn.disabled=false; btn.innerHTML=saveLabel; };
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
   let canvas = null;
   try {
     canvas = cropper.getCroppedCanvas({
-      width: 354,
-      height: 472,
+      width: OUT_W,
+      height: OUT_H,
       fillColor: '#fff',
       imageSmoothingQuality: 'high'
     });
@@ -721,7 +724,7 @@ function saveCrop() {
         }
       })
       .catch(err=> { console.error(err); alert('Network error'); })
-      .finally(()=> { btn.disabled=false; btn.innerHTML='<i class="bi bi-check-lg me-1"></i>Save Crop (354×472)'; });
+      .finally(()=> { btn.disabled=false; btn.innerHTML=saveLabel; });
   }, 'image/jpeg', 0.92);
 }
 

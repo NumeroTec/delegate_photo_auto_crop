@@ -17,7 +17,7 @@ class Config:
 
     # Output dimensions
     OUTPUT_WIDTH = int(os.getenv('OUTPUT_WIDTH', 354))
-    OUTPUT_HEIGHT = int(os.getenv('OUTPUT_HEIGHT', 472))
+    OUTPUT_HEIGHT = int(os.getenv('OUTPUT_HEIGHT', 455))
 
     # Crop configuration
     TOP_PADDING_RATIO = float(os.getenv('TOP_PADDING_RATIO', 0.20))

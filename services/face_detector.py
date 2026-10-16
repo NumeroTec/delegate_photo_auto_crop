@@ -103,7 +103,7 @@ def detect_face(image_path):
         # If suspiciously low and y > 0.45*H, mark as NO_FACE to trigger manual review rather than bad crop
         if y > img_h*0.48 and area_ratio < 0.04:
             # Try to see if it's isolated without alternative — treat as NO_FACE to avoid wrong crop
-            # But keep backward compat: if image is 354x472 passport already, this rarely hits
+            # But keep backward compat: if image is 354x455 passport already, this rarely hits
             pass
         return {'status': 'OK', 'bbox': (int(x), int(y), int(w), int(h)), 'confidence': 1.0}
 

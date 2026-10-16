@@ -45,6 +45,16 @@ def create_app():
     def basename_filter(path):
         return _os.path.basename(path) if path else ''
 
+    # Expose output dimensions to all templates so manual-crop JS
+    # always matches .env (OUTPUT_WIDTH/OUTPUT_HEIGHT) instead of
+    # hardcoded 354x455.
+    @app.context_processor
+    def inject_output_size():
+        return {
+            'OUTPUT_WIDTH': app.config.get('OUTPUT_WIDTH', 354),
+            'OUTPUT_HEIGHT': app.config.get('OUTPUT_HEIGHT', 455),
+        }
+
     return app
 
 if __name__ == '__main__':

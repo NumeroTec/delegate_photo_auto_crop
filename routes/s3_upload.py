@@ -257,7 +257,7 @@ def _upload_one(conf_schema, did, conf_key, force=False, csv_w=None, logger=None
                     'original_path': found_orig,
                     'original_url': found_url,
                     'status': 'AUTO_UPDATED',
-                    'detail': 'cropped to 354x472 (from disk)',
+                    'detail': 'cropped to 354x455 (from disk)',
                     'bbox': None,
                     's3_status': 'PENDING',
                     's3_key': None,

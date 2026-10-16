@@ -115,9 +115,9 @@ def _crop_zoom_detail(local_path, bbox):
         _x, _y, _w, _h = bbox
         out_h = _Cfg.OUTPUT_HEIGHT
         scale = (_Cfg.FACE_TARGET_RATIO * out_h) / max(1, _h)
-        return f"cropped to 354x472 from {W}x{H} face {_h}px zoom x{scale:.2f}", scale, (W, H)
+        return f"cropped to 354x455 from {W}x{H} face {_h}px zoom x{scale:.2f}", scale, (W, H)
     except Exception:
-        return "cropped to 354x472", 0, (0, 0)
+        return "cropped to 354x455", 0, (0, 0)
 
 
 def _previews_identical(local_path, preview_path, threshold=8.0):
@@ -259,7 +259,7 @@ def processing_worker(app, conf_id, conf_schema, conf_key=None, force=False):
                         st['errors'] += 1
                         st['processed'] += 1
                         continue
-                    # Step 2: check if already passport-like (354x472 + face like passport)
+                    # Step 2: check if already passport-like (354x455 + face like passport)
                     is_good, reason, good_bbox = is_passport_photo(local_path)
                     if is_good:
                         # Already good — skip crop, mark as good and copy to preview/good

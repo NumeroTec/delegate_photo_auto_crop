@@ -68,8 +68,8 @@ STATUS_DEFAULTS = {
     'total': 0,
     'processed': 0,
     'good': 0,              # already passport-like, skipped crop
-    'auto_updated': 0,      # auto cropped to 354x472
-    'manual_updated': 0,    # manually cropped to 354x472 via Crop button
+    'auto_updated': 0,      # auto cropped to 354x455
+    'manual_updated': 0,    # manually cropped to 354x455 via Crop button
     'failed': 0,            # crop failed / face not detected / uncrop
     'auto_approved': 0,     # legacy alias of auto_updated
     'needs_review': 0,
