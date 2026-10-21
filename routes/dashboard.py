@@ -35,6 +35,21 @@ def _new_entry(url, local_path, preview_path, status, detail, confidence, bbox, 
     }
 
 
+def _is_exact_output_size(path):
+    """True only when the image is exactly OUTPUT_WIDTH x OUTPUT_HEIGHT.
+
+    Used before skipping the crop for app-uploaded files: older uploads may
+    have a valid app filename but the wrong height (e.g. 354x472) and must
+    still be re-cropped to the configured passport size.
+    """
+    try:
+        from PIL import Image
+        with Image.open(path) as _img:
+            return _img.size == (Config.OUTPUT_WIDTH, Config.OUTPUT_HEIGHT)
+    except Exception:
+        return False
+
+
 def _is_app_uploaded(record, conf_key=None):
     """True ONLY if this DB row is a photo uploaded by THIS app (not a raw S3 original).
 
@@ -200,6 +215,7 @@ def processing_worker(app, conf_id, conf_schema, conf_key=None, force=False):
                     # shows identical ORIGINAL vs CROPPED).
                     # Manual re-crop sets in-memory MANUAL_UPDATED/PENDING, so
                     # respect that and re-process only when forced or re-edited.
+                    local_path = None
                     if not force and (_is_app_uploaded(record, conf_key) or _looks_like_app_file(record)):
                         try:
                             _mem = conf_state.get_entry(conf_schema, delegate_id)
@@ -207,50 +223,54 @@ def processing_worker(app, conf_id, conf_schema, conf_key=None, force=False):
                             _mem = None
                         if not (_mem and _mem.get('status') == 'MANUAL_UPDATED'):
                             local_path = download_image(url, delegate_id, conf_key=conf_key)
-                            if local_path:
+                            # The app-upload filename is NOT proof that the image
+                            # is the right passport size (legacy uploads can be
+                            # 354x472). Only skip the crop when the file is
+                            # EXACTLY OUTPUT_WIDTH x OUTPUT_HEIGHT; otherwise fall
+                            # through to the normal crop pipeline below.
+                            if local_path and _is_exact_output_size(local_path):
                                 try:
                                     preview_path = copy_as_good(local_path, delegate_id, conf_key=conf_key)
                                 except Exception:
                                     preview_path = local_path
-                            else:
-                                preview_path = None
-                            _s3_key = None
-                            try:
-                                if url and '.amazonaws.com/' in url:
-                                    _s3_key = url.split('.amazonaws.com/', 1)[1]
-                            except Exception:
                                 _s3_key = None
-                            _entry = _new_entry(
-                                url, local_path, preview_path, 'GOOD', 'uploaded to S3',
-                                1.0, None, record)
-                            _entry['s3_status'] = 'UPLOADED'
-                            _entry['s3_key'] = _s3_key
-                            _entry['s3_url'] = url
-                            conf_state.set_entry(conf_schema, delegate_id, _entry)
-                            # Already-cropped app file still flagged pending (0):
-                            # flip DB to done (2) so it leaves the pending queue.
-                            try:
-                                if int((record or {}).get('profile_photo_status') or 0) == 0:
-                                    _conn = get_connection(database=conf_schema)
+                                try:
+                                    if url and '.amazonaws.com/' in url:
+                                        _s3_key = url.split('.amazonaws.com/', 1)[1]
+                                except Exception:
+                                    _s3_key = None
+                                _entry = _new_entry(
+                                    url, local_path, preview_path, 'GOOD', 'uploaded to S3',
+                                    1.0, None, record)
+                                _entry['s3_status'] = 'UPLOADED'
+                                _entry['s3_key'] = _s3_key
+                                _entry['s3_url'] = url
+                                conf_state.set_entry(conf_schema, delegate_id, _entry)
+                                # Already-cropped app file still flagged pending (0):
+                                # flip DB to done (2) so it leaves the pending queue.
+                                try:
+                                    if int((record or {}).get('profile_photo_status') or 0) == 0:
+                                        _conn = get_connection(database=conf_schema)
+                                        try:
+                                            with _conn.cursor() as _cur:
+                                                _cur.execute("UPDATE delegates SET profile_photo_status=%s WHERE delegate_id=%s AND profile_photo_status=0", (2, delegate_id))
+                                            _conn.commit()
+                                        finally:
+                                            _conn.close()
+                                        try:
+                                            record['profile_photo_status'] = 2
+                                        except Exception:
+                                            pass
+                                except Exception as _e:
                                     try:
-                                        with _conn.cursor() as _cur:
-                                            _cur.execute("UPDATE delegates SET profile_photo_status=%s WHERE delegate_id=%s AND profile_photo_status=0", (2, delegate_id))
-                                        _conn.commit()
-                                    finally:
-                                        _conn.close()
-                                    try:
-                                        record['profile_photo_status'] = 2
+                                        app.logger.warning(f"Skip-path flag flip failed for {delegate_id}: {_e}")
                                     except Exception:
                                         pass
-                            except Exception as _e:
-                                try:
-                                    app.logger.warning(f"Skip-path flag flip failed for {delegate_id}: {_e}")
-                                except Exception:
-                                    pass
-                            st['good'] += 1
-                            st['processed'] += 1
-                            continue
-                    local_path = download_image(url, delegate_id, conf_key=conf_key)
+                                st['good'] += 1
+                                st['processed'] += 1
+                                continue
+                    if not local_path:
+                        local_path = download_image(url, delegate_id, conf_key=conf_key)
                     if not local_path:
                         conf_state.set_entry(conf_schema, delegate_id, _new_entry(
                             url, None, None, 'FAILED', 'IMAGE_DOWNLOAD_ERROR',

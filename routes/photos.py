@@ -140,6 +140,7 @@ def _scan_dir_for_entries(d, status, conf_schema, detail, original_dir, conf_key
             's3_url': restored_s3_url,
             's3_error': '',
             'uploaded_at': None,
+            'from_disk': True,
         })
 
 
@@ -270,30 +271,36 @@ def _db_view_entries(conf_schema, conf_key, view):
             orig_url = build_photo_url(rec.get('del_img_path'), rec.get('del_img_filename'))
         except Exception:
             orig_url = None
-        preview_file = _find_preview_for(did, conf_key)
         original_file = _find_original(did, conf_key)
-        # Overlay in-memory crop state so a freshly cropped photo shows the
-        # S3 checkbox in DB views (?view=registered etc.). DB views derive
-        # status from profile_photo_status only (PENDING), so without this
-        # the {% if status in (AUTO/MANUAL) %} S3 box never appears even
-        # though a 354x455 preview exists on disk.
+        # DB views must not show crops left on disk by an earlier run: before
+        # Start Processing (or a manual Crop) there is no session result for
+        # this delegate. Entries rebuilt from disk are flagged 'from_disk'.
         try:
             mem = conf_state.get_entry(conf_schema, did) if did else None
-            if flag != 2 and preview_file and status in ('PENDING', 'REJECTED', 'NO_PHOTO'):
-                mem_status = (mem or {}).get('status') if mem else None
-                if mem_status in ('AUTO_UPDATED', 'MANUAL_UPDATED'):
-                    mem_pv = (mem or {}).get('preview_path')
-                    if mem_pv and os.path.exists(mem_pv):
-                        preview_file = mem_pv
-                    status = mem_status
-                    detail = (mem or {}).get('detail') or 'cropped to 354x455'
-                else:
-                    # Restart-safe fallback: preview exists on disk but no
-                    # in-memory entry (e.g. server restarted). Treat as
-                    # croppped so S3 upload is offered.
-                    status, detail = 'AUTO_UPDATED', 'cropped to 354x455 (from disk)'
         except Exception:
-            pass
+            mem = None
+        mem_status = (mem or {}).get('status') if mem else None
+        fresh = bool(mem) and not (mem or {}).get('from_disk')
+
+        preview_file = None
+        if flag == 2:
+            # Verified/uploaded in the DB: show the local passport copy when
+            # available (template falls back to the DB original URL).
+            preview_file = _find_preview_for(did, conf_key)
+        elif fresh:
+            mem_pv = (mem or {}).get('preview_path')
+            if mem_pv and os.path.exists(mem_pv):
+                preview_file = mem_pv
+            elif mem_status in ('AUTO_UPDATED', 'MANUAL_UPDATED'):
+                preview_file = _find_preview_for(did, conf_key)
+
+        if fresh and mem_status in ('AUTO_UPDATED', 'MANUAL_UPDATED') and preview_file:
+            # A fresh / re-crop is upload-eligible even when the DB row is
+            # already verified (profile_photo_status=2). Without this,
+            # re-cropping a Done delegate in ?view=registered fell back to
+            # GOOD and the S3 checkbox / upload buttons never appeared.
+            status = mem_status
+            detail = (mem or {}).get('detail') or 'cropped to 354x455'
         s3_status, s3_key, s3_url = 'PENDING', None, None
         try:
             if _is_app_uploaded_row(rec, conf_key):
@@ -462,6 +469,21 @@ def photos_list():
                 tmp.append(d)
         filtered = tmp
 
+    # Processing-session counts (good / auto / manual / failed). Derived from
+    # this conference's in-memory store. DB views count only results produced
+    # in THIS session (not entries rebuilt from disk after a restart), so the
+    # row reads 0 before Start Processing — matching what the DB view shows.
+    proc_entries = conf_state.scoped_entries(conf_schema)
+    if db_view:
+        proc_entries = [d for d in proc_entries if not d.get('from_disk')]
+    proc_counts = {
+        'total': len(proc_entries),
+        'good': sum(1 for d in proc_entries if d.get('status') == 'GOOD'),
+        'auto_updated': sum(1 for d in proc_entries if d.get('status') in ('AUTO_UPDATED', 'OK')),
+        'manual_updated': sum(1 for d in proc_entries if d.get('status') == 'MANUAL_UPDATED'),
+        'failed': sum(1 for d in proc_entries if d.get('status') == 'FAILED'),
+    }
+
     total = len(filtered)
     # Counts for header (always total counts, not filtered)
     if db_view:
@@ -494,9 +516,10 @@ def photos_list():
     page_items = filtered[start:end]
     total_pages = (total + per_page - 1) // per_page if total > 0 else 1
 
-    return render_template('photos.html', items=page_items, counts=counts, status_filter=status_filter,
-                           page=page, per_page=per_page, total=total, total_pages=total_pages, search=search,
-                           db_view=db_view, db_view_label=DB_VIEW_LABELS.get(db_view, ''), db_stats=db_stats)
+    return render_template('photos.html', items=page_items, counts=counts, proc_counts=proc_counts,
+                           status_filter=status_filter, page=page, per_page=per_page, total=total,
+                           total_pages=total_pages, search=search, db_view=db_view,
+                           db_view_label=DB_VIEW_LABELS.get(db_view, ''), db_stats=db_stats)
 
 @photos_bp.route('/image/<path:filename>')
 def serve_image(filename):
@@ -612,6 +635,7 @@ def photo_info(delegate_id):
             'original_url': orig_url,
             'status': 'AUTO_UPDATED' if found_preview else 'FAILED',
             'detail': 'restored',
+            'from_disk': True,
         }
         conf_state.set_entry(conf_schema, delegate_id, data)
     rec = data.get('record', {})
@@ -713,6 +737,9 @@ def manual_crop(delegate_id):
             # New crop needs re-upload even if previously uploaded
             data['s3_status'] = 'PENDING'
             data['s3_error'] = ''
+            # This is a crop made in the current session, even if the entry
+            # was originally rebuilt from disk.
+            data['from_disk'] = False
             # Keep original_path if exists
         else:
             # Create minimal entry if not existed (e.g., after restart)
@@ -728,6 +755,7 @@ def manual_crop(delegate_id):
                 's3_url': None,
                 's3_error': '',
                 'uploaded_at': None,
+                'from_disk': False,
             })
 
         # Recount THIS conference's dashboard counters so Good/Auto/Manual/Failed stay accurate

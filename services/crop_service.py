@@ -71,25 +71,36 @@ def copy_as_good(original_path, delegate_id, conf_key=None):
         img.convert('RGB').save(dest, 'JPEG')
     return preview
 
-def _band_has_head(band_img, h, H):
-    """Decide whether a crown zone holds forehead/face skin.
+def _skin_fraction(image):
+    """Fraction of pixels in skin-tone YCbCr range."""
+    import numpy as np
+    ycb = np.asarray(image.convert('YCbCr'), dtype=np.float32)
+    cb, cr = ycb[..., 1], ycb[..., 2]
+    skin = (cb >= 77) & (cb <= 127) & (cr >= 133) & (cr <= 173)
+    return float(skin.mean())
 
-    Trigger requires BOTH:
-      - skin fraction (YCbCr ellipse) > 0.15 in the zone, and
-      - bbox height h >= 13% of image height (distant tiny faces always use
-        the normal zoom path — e.g. a beige wall above a small face mimics
-        skin fraction but must still zoom).
+def _band_has_head(center_img, side_imgs, h, H):
+    """Decide whether the top edge of the crop slices through the forehead.
+
+    Only the kept crop's top few rows are inspected: if the window cut the
+    crown, skin fills the center of that edge while the sides show hair or
+    background. The old check sampled the discarded rows above the crop,
+    where skin-toned walls (wood/beige) falsely disabled zoom for large faces
+    (delegate 25, Md Raghib Tauheed: 354x472 input stayed unzoomed).
+
+    Trigger requires ALL:
+      - bbox height h >= 13% of image height (distant faces always zoom),
+      - center skin fraction > 0.15, and
+      - center exceeds the busiest side by > 0.15 (skin-toned background on
+        both sides never triggers).
     Fail-open: False on any error.
     """
     try:
-        import numpy as np
         if h < 0.13 * H:
             return False
-        rgb = band_img.convert('RGB')
-        ycb = np.asarray(rgb.convert('YCbCr'), dtype=np.float32)
-        cb, cr = ycb[..., 1], ycb[..., 2]
-        skin = (cb >= 77) & (cb <= 127) & (cr >= 133) & (cr <= 173)
-        return float(skin.mean()) > 0.15
+        center = _skin_fraction(center_img)
+        sides = max((_skin_fraction(s) for s in side_imgs), default=0.0)
+        return center > 0.15 and (center - sides) > 0.15
     except Exception:
         return False
 
@@ -163,26 +174,26 @@ def generate_passport_crop(original_path, bbox, delegate_id, conf_key=None):
     crop_x = face_cx - crop_w / 2
 
     # --- Decapitation guard ---
-    # The crop window discards rows [0, crop_top). The crown/forehead lives in
-    # the bbox x-range above the bbox top, so examine exactly that "crown
-    # zone": rows [0, min(crop_top, bbox_top)), center half of the bbox width
-    # (sides hold long hair / background, never the crown). If the zone holds
-    # forehead skin, the crop would slice the crown (delegate 71 Balveer:
-    # 1.86x zoom from an underestimated bbox cut crown AND chin) -> fall back
-    # to the full-height cover window centered on the face: maximum head
-    # preservation, never worse than the input photo.
+    # Inspect the top edge of the KEPT crop only (a few rows). If the window
+    # slices the forehead, skin runs across the center of that edge; the sides
+    # hold hair/background. Sampling the discarded rows above the crop instead
+    # sees skin-toned walls and wrongly kills zoom (delegate 25 Md Raghib).
+    # If genuine decapitation is detected (delegate 71 Balveer: underestimated
+    # bbox cut crown AND chin), fall back to the full-height cover window.
     try:
-        _ztop = max(0, int(round(crop_y)))
-        _zbot = min(img_height, int(y))
+        _ztop = max(0, min(int(round(crop_y)), img_height - 1))
+        _zbot = min(img_height, _ztop + 5)
         _zx0 = max(0, int(x + w / 4))
         _zx1 = min(img_width, int(x + 3 * w / 4))
         _decap = False
-        if min(_ztop, _zbot) >= int(0.02 * img_height) and _zx1 > _zx0:
-            _decap = _band_has_head(img.crop((_zx0, 0, _zx1, min(_ztop, _zbot))), h, img_height)
-    except Exception:
-        _decap = False
-        if _by0 >= int(0.02 * img_height) and _bx1 > _bx0:
-            _decap = _band_has_head(img.crop((_bx0, 0, _bx1, _by0)))
+        if _zbot > _ztop and _zx1 > _zx0:
+            _center = img.crop((_zx0, _ztop, _zx1, _zbot))
+            _sides = []
+            if _zx0 > 0:
+                _sides.append(img.crop((0, _ztop, _zx0, _zbot)))
+            if _zx1 < img_width:
+                _sides.append(img.crop((_zx1, _ztop, img_width, _zbot)))
+            _decap = _band_has_head(_center, _sides, h, img_height)
     except Exception:
         _decap = False
     if _decap:
